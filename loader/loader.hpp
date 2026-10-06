@@ -1,7 +1,6 @@
 #pragma once
 #include "elf.hpp"
 
-// Maps a static, non-PIE x86-64 ELF into this process and jumps to its entry.
-// Returns false with `error` set if loading fails. On success the guest
-// normally exits the process itself and this never returns.
-bool load_and_run(const std::vector<uint8_t>& data, std::string& error);
+// Maps the LOAD segments of a static, non-PIE x86-64 ELF into this process.
+// On success returns true and sets `entry` to the guest entry point.
+bool load_image(const std::vector<uint8_t>& data, uint64_t& entry, std::string& error);

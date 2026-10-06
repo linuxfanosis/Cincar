@@ -10,7 +10,7 @@ static int prot_from_flags(uint32_t f) {
     return p;
 }
 
-bool load_and_run(const std::vector<uint8_t>& d, std::string& error) {
+bool load_image(const std::vector<uint8_t>& d, uint64_t& entry, std::string& error) {
     auto h = parse_elf_header(d, error);
     if (!h) return false;
     if (h->machine != 0x3e) { error = "not an x86-64 executable"; return false; }
@@ -21,20 +21,15 @@ bool load_and_run(const std::vector<uint8_t>& d, std::string& error) {
     const uint64_t PAGE = 4096;
     for (const auto& p : *ph) {
         if (p.type == 3) { error = "dynamic executables (INTERP) not supported yet"; return false; }
-        if (p.type != 1) continue;  // only LOAD segments get mapped
-
+        if (p.type != 1) continue;
         if (p.filesz > p.memsz) { error = "segment filesz > memsz"; return false; }
         if (p.memsz > (1ull << 32)) { error = "segment unreasonably large"; return false; }
         if (p.vaddr < 0x10000) { error = "segment address too low"; return false; }
         if (p.offset > d.size() || p.filesz > d.size() - p.offset) {
             error = "segment data extends past end of file"; return false;
         }
-
         uint64_t start = p.vaddr & ~(PAGE - 1);
         uint64_t end = (p.vaddr + p.memsz + PAGE - 1) & ~(PAGE - 1);
-
-        // Map writable and zeroed, copy the file bytes in, then apply the real
-        // permissions. Anonymous memory is zero, so .bss (memsz > filesz) is free.
         void* m = mmap((void*)start, end - start, PROT_READ | PROT_WRITE,
                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
         if (m == MAP_FAILED) { error = "mmap failed (address range in use?)"; return false; }
@@ -43,8 +38,6 @@ bool load_and_run(const std::vector<uint8_t>& d, std::string& error) {
             error = "mprotect failed"; return false;
         }
     }
-
-    auto entry = reinterpret_cast<void (*)()>(h->entry);
-    entry();
+    entry = h->entry;
     return true;
 }
