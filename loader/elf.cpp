@@ -27,3 +27,31 @@ std::optional<Elf64Header> parse_elf_header(const std::vector<uint8_t>& d,
     h.phnum     = read_le<uint16_t>(d, 56);
     return h;
 }
+
+std::optional<std::vector<Elf64Phdr>> parse_program_headers(
+    const std::vector<uint8_t>& d, const Elf64Header& h, std::string& error) {
+    if (h.phentsize < 56) { error = "program header entry too small"; return std::nullopt; }
+    // Check bounds before reading: never trust offsets from the file.
+    if (h.phoff > d.size()) { error = "program header offset past end of file"; return std::nullopt; }
+    uint64_t table_size = (uint64_t)h.phnum * h.phentsize;
+    if (table_size > d.size() - h.phoff) {
+        error = "program header table extends past end of file"; return std::nullopt;
+    }
+
+    std::vector<Elf64Phdr> out;
+    out.reserve(h.phnum);
+    for (uint16_t i = 0; i < h.phnum; ++i) {
+        size_t o = h.phoff + (size_t)i * h.phentsize;
+        Elf64Phdr p{};
+        p.type   = read_le<uint32_t>(d, o + 0);
+        p.flags  = read_le<uint32_t>(d, o + 4);
+        p.offset = read_le<uint64_t>(d, o + 8);
+        p.vaddr  = read_le<uint64_t>(d, o + 16);
+        p.paddr  = read_le<uint64_t>(d, o + 24);
+        p.filesz = read_le<uint64_t>(d, o + 32);
+        p.memsz  = read_le<uint64_t>(d, o + 40);
+        p.align  = read_le<uint64_t>(d, o + 48);
+        out.push_back(p);
+    }
+    return out;
+}
