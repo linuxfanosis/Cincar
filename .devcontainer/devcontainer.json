@@ -1,0 +1,10 @@
+{
+  "name": "Cincar",
+  "image": "mcr.microsoft.com/devcontainers/cpp:ubuntu",
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y cmake ninja-build spirv-tools glslang-tools libvulkan-dev vulkan-tools mesa-vulkan-drivers",
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-vscode.cpptools", "ms-vscode.cmake-tools"]
+    }
+  }
+}
