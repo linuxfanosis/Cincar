@@ -9,7 +9,7 @@ check() {
     else echo "FAIL: $1 (expected '$3', got '$2')"; fail=1; fi
 }
 
-for t in hello exit7 getpid crash escape; do
+for t in hello exit7 getpid crash escape memory badmmap; do
     gcc -nostdlib -static -no-pie tests/$t.S -o "$TMP/$t"
 done
 
@@ -23,7 +23,7 @@ check "exit code propagates" "$code" "7"
 # The guest's syscalls must go through our runtime, not the kernel.
 trace=$(CINCAR_TRACE=1 "$BUILD/runelf" "$TMP/hello" 2>&1 >/dev/null)
 check "write intercepted" "$(echo "$trace" | grep -c 'guest\] write(1')" "1"
-check "exit intercepted" "$(echo "$trace" | grep -c 'guest\] exit(0)')" "1"
+check "exit intercepted" "$(echo "$trace" | grep -c 'guest\] exit(0,')" "1"
 
 # Unimplemented syscalls fail loudly and return ENOSYS (38) to the guest.
 msg=$("$BUILD/runelf" "$TMP/getpid" 2>&1); code=$?
@@ -38,6 +38,16 @@ check "bad fd rejected with EBADF" "$code" "9"
 err=$("$BUILD/runelf" "$TMP/crash" 2>&1); code=$?
 check "guest crash exit code" "$code" "1"
 check "guest crash message" "$err" "error: guest stopped by signal 11"
+
+# Guest memory: brk + anonymous mmap come from our own allocator.
+out=$("$BUILD/runelf" "$TMP/memory"); code=$?
+check "brk/mmap guest output" "$out" "OK"
+check "brk/mmap guest exit code" "$code" "0"
+trace=$(CINCAR_TRACE=1 "$BUILD/runelf" "$TMP/memory" 2>&1 >/dev/null)
+check "brk intercepted" "$(echo "$trace" | grep -c 'guest\] brk(')" "2"
+check "mmap intercepted" "$(echo "$trace" | grep -c 'guest\] mmap(')" "1"
+"$BUILD/runelf" "$TMP/badmmap" 2>/dev/null; code=$?
+check "file-backed mmap rejected (EINVAL)" "$code" "22"
 
 echo "not an elf" > "$TMP/bad"
 err=$("$BUILD/runelf" "$TMP/bad" 2>&1); code=$?
