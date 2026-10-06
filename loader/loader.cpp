@@ -10,7 +10,7 @@ static int prot_from_flags(uint32_t f) {
     return p;
 }
 
-bool load_image(const std::vector<uint8_t>& d, uint64_t& entry, std::string& error) {
+bool load_image(const std::vector<uint8_t>& d, LoadInfo& info, std::string& error) {
     auto h = parse_elf_header(d, error);
     if (!h) return false;
     if (h->machine != 0x3e) { error = "not an x86-64 executable"; return false; }
@@ -34,10 +34,14 @@ bool load_image(const std::vector<uint8_t>& d, uint64_t& entry, std::string& err
                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
         if (m == MAP_FAILED) { error = "mmap failed (address range in use?)"; return false; }
         std::memcpy((void*)p.vaddr, d.data() + p.offset, p.filesz);
+        // The segment holding file offset 0 contains the ELF + program headers.
+        if (p.offset == 0 && h->phoff < p.filesz) info.phdr = p.vaddr + h->phoff;
         if (mprotect((void*)start, end - start, prot_from_flags(p.flags)) != 0) {
             error = "mprotect failed"; return false;
         }
     }
-    entry = h->entry;
+    info.entry = h->entry;
+    info.phent = h->phentsize;
+    info.phnum = h->phnum;
     return true;
 }

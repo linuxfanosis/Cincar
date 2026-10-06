@@ -49,6 +49,23 @@ check "mmap intercepted" "$(echo "$trace" | grep -c 'guest\] mmap(')" "1"
 "$BUILD/runelf" "$TMP/badmmap" 2>/dev/null; code=$?
 check "file-backed mmap rejected (EINVAL)" "$code" "22"
 
+# A real C program: libc startup (TLS, auxv, brk, ...) then printf, all via our runtime.
+gcc -static -no-pie -O1 tests/cprog.c -o "$TMP/cprog"
+out=$("$BUILD/runelf" "$TMP/cprog" 2>&1); code=$?
+check "C program output" "$out" "hello from C, via libc"
+check "C program exit code" "$code" "0"
+trace=$(CINCAR_TRACE=1 "$BUILD/runelf" "$TMP/cprog" 2>&1 >/dev/null)
+check "libc set up TLS via arch_prctl" "$(echo "$trace" | grep -c 'guest\] arch_prctl(4098')" "1"
+
+# HLE imports: the guest calls host functions by name; unknown names fail loudly.
+gcc -static -no-pie tests/hle_guest.c tests/hle_stubs.S -o "$TMP/hle"
+out=$("$BUILD/runelf" "$TMP/hle" 2>/dev/null); code=$?
+check "HLE puts output" "$out" "hello from an HLE import"
+check "HLE guest exit code" "$code" "0"
+msg=$(CINCAR_TRACE=1 "$BUILD/runelf" "$TMP/hle" 2>&1 >/dev/null)
+check "HLE add resolved by name" "$(echo "$msg" | grep -c 'hle\] cincar_add(2, 3)')" "1"
+check "unresolved import named" "$(echo "$msg" | grep -c "unresolved import 'cincar_missing'")" "1"
+
 echo "not an elf" > "$TMP/bad"
 err=$("$BUILD/runelf" "$TMP/bad" 2>&1); code=$?
 check "bad file rejected" "$code" "1"
