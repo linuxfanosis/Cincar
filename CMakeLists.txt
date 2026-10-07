@@ -24,3 +24,12 @@ target_link_libraries(shadercc shader)
 
 add_executable(shaderrun tools/shaderrun.cpp)
 target_link_libraries(shaderrun shader)
+
+# Optional: runs translated shaders on a real Vulkan device (needs libvulkan-dev).
+find_package(Vulkan)
+if(Vulkan_FOUND)
+  add_executable(vkrun tools/vkrun.cpp)
+  target_link_libraries(vkrun shader Vulkan::Vulkan)
+else()
+  message(STATUS "Vulkan not found: vkrun will not be built")
+endif()

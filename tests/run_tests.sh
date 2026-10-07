@@ -97,6 +97,24 @@ expect_eval_error "missing data for input 'b'" tests/shaders/madd.ir a=1,2
 expect_eval_error "data given for unknown input 'c'" tests/shaders/madd.ir a=1 b=1 c=1
 expect_eval_error "bad number 'x'" tests/shaders/madd.ir a=1,x b=1,2
 
+# Run the translated shader on a real Vulkan device (lavapipe on CPU, or a GPU) and
+# compare with the CPU evaluator. Skipped when there is no Vulkan device.
+gpu_check() {   # test name, then vkrun arguments
+    gname="$1"; shift
+    gout=$("$BUILD/vkrun" "$@" 2>&1); gcode=$?
+    if [ $gcode -eq 77 ]; then echo "SKIP: GPU $gname (no Vulkan device)"; return; fi
+    check "GPU matches CPU: $gname" "$gcode" "0"
+    if [ $gcode -ne 0 ]; then echo "$gout"; fi
+}
+if [ -x "$BUILD/vkrun" ] && command -v spirv-as >/dev/null; then
+    A=$(seq -s, 1 100); B=$(seq -s, 101 200)
+    gpu_check "madd" tests/shaders/madd.ir a=1,2,3 b=4,5,6
+    gpu_check "all operations" tests/shaders/ops.ir x=16,9 y=8,100
+    gpu_check "madd, 100 elements (2 workgroups)" tests/shaders/madd.ir a=$A b=$B
+else
+    echo "SKIP: vkrun not built or spirv-as missing"
+fi
+
 expect_ir_error() {   # file, expected message
     err=$("$BUILD/shadercc" "tests/shaders/$1.ir" 2>&1 >/dev/null); code=$?
     check "IR error: $1 exit code" "$code" "1"
