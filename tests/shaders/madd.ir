@@ -1,0 +1,7 @@
+# out = (a + b) * 2.0   -- evaluated once per element
+in a
+in b
+const two 2.0
+add t0 a b
+mul t1 t0 two
+out t1

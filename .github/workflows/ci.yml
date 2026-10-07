@@ -5,7 +5,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build spirv-tools
       - run: cmake -B build -G Ninja
       - run: cmake --build build
       - run: bash tests/run_tests.sh build

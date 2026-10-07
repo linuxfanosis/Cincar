@@ -66,6 +66,33 @@ msg=$(CINCAR_TRACE=1 "$BUILD/runelf" "$TMP/hle" 2>&1 >/dev/null)
 check "HLE add resolved by name" "$(echo "$msg" | grep -c 'hle\] cincar_add(2, 3)')" "1"
 check "unresolved import named" "$(echo "$msg" | grep -c "unresolved import 'cincar_missing'")" "1"
 
+# GPU track: IR -> SPIR-V assembly, then validate with the real Khronos tools.
+for name in madd names; do
+    "$BUILD/shadercc" tests/shaders/$name.ir > "$TMP/$name.spvasm" 2>/dev/null; code=$?
+    check "shadercc translates $name.ir" "$code" "0"
+done
+if command -v spirv-as >/dev/null && command -v spirv-val >/dev/null; then
+    for name in madd names; do
+        spirv-as --target-env vulkan1.0 "$TMP/$name.spvasm" -o "$TMP/$name.spv" 2>"$TMP/as.log"; code=$?
+        check "spirv-as assembles $name" "$code" "0"
+        [ $code -ne 0 ] && cat "$TMP/as.log"
+        spirv-val --target-env vulkan1.0 "$TMP/$name.spv" 2>"$TMP/val.log"; code=$?
+        check "spirv-val accepts $name" "$code" "0"
+        [ $code -ne 0 ] && cat "$TMP/val.log"
+    done
+else
+    echo "SKIP: spirv-as/spirv-val not installed (sudo apt-get install -y spirv-tools)"
+fi
+expect_ir_error() {   # file, expected message
+    err=$("$BUILD/shadercc" "tests/shaders/$1.ir" 2>&1 >/dev/null); code=$?
+    check "IR error: $1 exit code" "$code" "1"
+    check "IR error: $1 message" "$err" "$2"
+}
+expect_ir_error bad_undefined "error: line 2: undefined value 'missing'"
+expect_ir_error bad_noout "error: no 'out' instruction"
+expect_ir_error bad_duplicate "error: line 2: 'a' is already defined"
+expect_ir_error bad_opcode "error: line 2: unknown instruction 'frobnicate'"
+
 echo "not an elf" > "$TMP/bad"
 err=$("$BUILD/runelf" "$TMP/bad" 2>&1); code=$?
 check "bad file rejected" "$code" "1"
