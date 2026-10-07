@@ -107,7 +107,9 @@ std::string emit_spvasm(const Program& p) {
       << "OpDecorate %gid BuiltIn GlobalInvocationId\n"
       << "OpDecorate %arr ArrayStride 4\n"
       << "OpMemberDecorate %buf 0 Offset 0\n"
-      << "OpDecorate %buf BufferBlock\n";
+      << "OpDecorate %buf BufferBlock\n"
+      << "OpDecorate %pc_struct Block\n"
+      << "OpMemberDecorate %pc_struct 0 Offset 0\n";
     for (size_t i = 0; i < p.inputs.size(); ++i)
         o << "OpDecorate %buf_" << p.inputs[i] << " DescriptorSet 0\n"
           << "OpDecorate %buf_" << p.inputs[i] << " Binding " << i << "\n";
@@ -126,7 +128,12 @@ std::string emit_spvasm(const Program& p) {
       << "%buf = OpTypeStruct %arr\n"
       << "%ptr_buf = OpTypePointer Uniform %buf\n"
       << "%ptr_f = OpTypePointer Uniform %float\n"
-      << "%uint_0 = OpConstant %uint 0\n";
+      << "%uint_0 = OpConstant %uint 0\n"
+      << "%bool = OpTypeBool\n"
+      << "%pc_struct = OpTypeStruct %uint\n"
+      << "%ptr_pc_struct = OpTypePointer PushConstant %pc_struct\n"
+      << "%ptr_pc_uint = OpTypePointer PushConstant %uint\n"
+      << "%pc = OpVariable %ptr_pc_struct PushConstant\n";
     for (const auto& n : p.inputs) o << "%buf_" << n << " = OpVariable %ptr_buf Uniform\n";
     o << "%outbuf = OpVariable %ptr_buf Uniform\n";
     for (const auto& c : p.consts)
@@ -135,7 +142,14 @@ std::string emit_spvasm(const Program& p) {
     o << "%main = OpFunction %void None %fn\n"
       << "%entry = OpLabel\n"
       << "%gid_ptr = OpAccessChain %ptr_in_uint %gid %uint_0\n"
-      << "%idx = OpLoad %uint %gid_ptr\n";
+      << "%idx = OpLoad %uint %gid_ptr\n"
+      // Bounds check: only threads with idx < count (a push constant) do any work.
+      << "%count_ptr = OpAccessChain %ptr_pc_uint %pc %uint_0\n"
+      << "%count = OpLoad %uint %count_ptr\n"
+      << "%in_range = OpULessThan %bool %idx %count\n"
+      << "OpSelectionMerge %merge None\n"
+      << "OpBranchConditional %in_range %body %merge\n"
+      << "%body = OpLabel\n";
     for (const auto& n : p.inputs)
         o << "%p_" << n << " = OpAccessChain %ptr_f %buf_" << n << " %uint_0 %idx\n"
           << "%v_" << n << " = OpLoad %float %p_" << n << "\n";
@@ -153,6 +167,8 @@ std::string emit_spvasm(const Program& p) {
     }
     o << "%outptr = OpAccessChain %ptr_f %outbuf %uint_0 %idx\n"
       << "OpStore %outptr %v_" << p.out << "\n"
+      << "OpBranch %merge\n"
+      << "%merge = OpLabel\n"
       << "OpReturn\n"
       << "OpFunctionEnd\n";
     return o.str();

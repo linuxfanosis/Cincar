@@ -175,6 +175,9 @@ int main(int argc, char** argv) {
         bufs.push_back(b);
     }
     bufs.push_back(make_buffer());
+    // Fill the output with a sentinel: threads past the end of the data must leave it untouched.
+    const float SENTINEL = 12345.0f;
+    for (size_t i = 0; i < padded; ++i) bufs.back().map[i] = SENTINEL;
     const uint32_t nb = (uint32_t)bufs.size();
 
     // ---- Descriptors and pipeline ----------------------------------------------
@@ -195,6 +198,12 @@ int main(int argc, char** argv) {
     VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     plci.setLayoutCount = 1;
     plci.pSetLayouts = &dsl;
+    VkPushConstantRange pcr{};                      // the element count, read by the shader's bounds check
+    pcr.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pcr.offset = 0;
+    pcr.size = sizeof(uint32_t);
+    plci.pushConstantRangeCount = 1;
+    plci.pPushConstantRanges = &pcr;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VK(vkCreatePipelineLayout(dev, &plci, nullptr, &layout));
 
@@ -261,6 +270,8 @@ int main(int argc, char** argv) {
     VK(vkBeginCommandBuffer(cb, &bi));
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, nullptr);
+    const uint32_t count = (uint32_t)n;
+    vkCmdPushConstants(cb, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(count), &count);
     vkCmdDispatch(cb, groups, 1, 1);
     // Make the shader's writes visible to the host before we read them back.
     VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
@@ -294,9 +305,16 @@ int main(int argc, char** argv) {
         if (n > shown) std::printf(" ... (%zu elements)", n);
         std::printf("\n");
     };
+    size_t first_dirty = padded;                    // first padding element that was written to
+    for (size_t i = n; i < padded; ++i)
+        if (gpu[i] != SENTINEL) { first_dirty = i; break; }
     print_vec("gpu", gpu);
     print_vec("cpu", expected.data());
     if (!ok) { std::printf("MISMATCH at element %zu\n", first_bad); return 1; }
-    std::printf("match (%zu elements)\n", n);
+    if (first_dirty != padded) {
+        std::printf("PADDING OVERWRITTEN at element %zu (threads past the end wrote to the buffer)\n", first_dirty);
+        return 1;
+    }
+    std::printf("match (%zu elements, padding untouched)\n", n);
     return 0;   // process exit releases the Vulkan objects; explicit teardown can come later
 }

@@ -21,7 +21,8 @@ bool parse_ir(const std::string& ir, Program& prog, std::string& error);
 
 // SPIR-V assembly text (the syntax spirv-as reads) for a Vulkan compute kernel:
 // each invocation reads element gl_GlobalInvocationID.x of every input buffer,
-// runs the instructions, and writes that element of the output buffer.
+// runs the instructions, and writes that element of the output buffer. The element
+// count is a push constant: invocations at or past it do nothing (bounds check).
 std::string emit_spvasm(const Program& prog);
 
 // Convenience: parse + emit.

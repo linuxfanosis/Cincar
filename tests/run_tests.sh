@@ -83,9 +83,14 @@ if command -v spirv-as >/dev/null && command -v spirv-val >/dev/null; then
 else
     echo "SKIP: spirv-as/spirv-val not installed (sudo apt-get install -y spirv-tools)"
 fi
+# The generated shader must be bounds-checked (the element count arrives as a push constant).
+check "emitted shader has a bounds check" "$(grep -c 'OpULessThan' "$TMP/madd.spvasm")" "1"
+check "emitted shader reads the count from a push constant" "$(grep -c 'OpVariable %ptr_pc_struct PushConstant' "$TMP/madd.spvasm")" "1"
+
 # CPU reference evaluator: the numbers a correct shader must produce.
 check "evaluator: madd" "$("$BUILD/shaderrun" tests/shaders/madd.ir a=1,2,3 b=4,5,6)" "10 14 18"
 check "evaluator: every operation" "$("$BUILD/shaderrun" tests/shaders/ops.ir x=16,9 y=8,100)" "2 -21"
+check "evaluator: names that look like internal ids" "$("$BUILD/shaderrun" tests/shaders/names.ir out=1,2 count=3,4 body=5,6)" "10 13"
 expect_eval_error() {   # expected message, then shaderrun arguments
     msg="$1"; shift
     err=$("$BUILD/shaderrun" "$@" 2>&1 >/dev/null); code=$?
@@ -111,6 +116,9 @@ if [ -x "$BUILD/vkrun" ] && command -v spirv-as >/dev/null; then
     gpu_check "madd" tests/shaders/madd.ir a=1,2,3 b=4,5,6
     gpu_check "all operations" tests/shaders/ops.ir x=16,9 y=8,100
     gpu_check "madd, 100 elements (2 workgroups)" tests/shaders/madd.ir a=$A b=$B
+    gpu_check "madd, 1 element (63 idle threads)" tests/shaders/madd.ir a=7 b=8
+    gpu_check "madd, 64 elements (exactly one workgroup)" tests/shaders/madd.ir a=$(seq -s, 1 64) b=$(seq -s, 1 64)
+    gpu_check "input names that look like internal ids" tests/shaders/names.ir out=1,2 count=3,4 body=5,6
 else
     echo "SKIP: vkrun not built or spirv-as missing"
 fi

@@ -1,5 +1,9 @@
-# an input that happens to be called "out" must not clash with internal ids
+# input names that look like internal ids must not clash with them
 in out
+in count
+in body
 const k 1.0
 add idx out k
-out idx
+add merge idx count
+add pc merge body
+out pc
