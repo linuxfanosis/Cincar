@@ -32,6 +32,9 @@ bool parse_ir(const std::string& ir, Program& prog, std::string& error);
 // count is a push constant: invocations at or past it do nothing (bounds check).
 std::string emit_spvasm(const Program& prog);
 
+// Writes a Program back out as IR text (the format parse_ir reads), so tools can be chained.
+std::string print_ir(const Program& prog);
+
 // Convenience: parse + emit.
 bool translate_ir_to_spvasm(const std::string& ir, std::string& spvasm, std::string& error);
 

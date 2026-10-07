@@ -202,3 +202,23 @@ bool translate_ir_to_spvasm(const std::string& ir, std::string& spvasm, std::str
     spvasm = emit_spvasm(p);
     return true;
 }
+
+std::string print_ir(const Program& p) {
+    std::ostringstream o;
+    for (const auto& n : p.inputs) o << "in " << n << "\n";
+    for (const auto& k : p.consts) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%.9g", (double)k.second);
+        o << "const " << k.first << " " << buf << "\n";
+    }
+    for (const auto& i : p.insts) {
+        if (i.op == "select")                       // select DST COND A B
+            o << "select " << i.dst << " " << i.c << " " << i.a << " " << i.b << "\n";
+        else if (i.b.empty())                       // unary: op DST A
+            o << i.op << " " << i.dst << " " << i.a << "\n";
+        else                                        // binary / compare: op DST A B
+            o << i.op << " " << i.dst << " " << i.a << " " << i.b << "\n";
+    }
+    o << "out " << p.out << "\n";
+    return o.str();
+}

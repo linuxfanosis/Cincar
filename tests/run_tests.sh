@@ -129,6 +129,57 @@ else
     echo "SKIP: vkrun not built or spirv-as missing"
 fi
 
+# ---- RDNA 2 machine-code decoder ------------------------------------------------------
+# Real instruction words -> shader IR -> evaluator (and Vulkan, when available).
+rdna2_run() {   # program, number of inputs, output register, expected CPU result, shaderrun args...
+    rname="$1"; rin="$2"; rout="$3"; rexp="$4"; shift 4
+    "$BUILD/rdna2dec" "tests/rdna2/$rname.hex" --inputs "$rin" --out "$rout" > "$TMP/$rname.ir" 2> "$TMP/$rname.err"; rcode=$?
+    check "RDNA2 decode $rname" "$rcode" "0"
+    if [ $rcode -ne 0 ]; then cat "$TMP/$rname.err"; fi
+    check "RDNA2 $rname: CPU result" "$("$BUILD/shaderrun" "$TMP/$rname.ir" "$@")" "$rexp"
+    if [ -x "$BUILD/vkrun" ] && command -v spirv-as >/dev/null; then
+        gpu_check "RDNA2 $rname" "$TMP/$rname.ir" "$@"
+    fi
+}
+rdna2_run madd  2 v3  "10 14 18"          v0=1,2,3 v1=4,5,6
+rdna2_run minxy 2 v2  "1 2 5"             v0=1,9,5 v1=4,2,5
+rdna2_run lit   2 v3  "150000 225000"     v0=1,2 v1=0.5,0.25
+rdna2_run cmp6  2 v19 "101001 1110 10101" v0=1,2,3 v1=2,2,1
+
+rdna2_error() {   # program, number of inputs, output register, expected message
+    err=$("$BUILD/rdna2dec" "tests/rdna2/$1.hex" --inputs "$2" --out "$3" 2>&1 >/dev/null); code=$?
+    check "RDNA2 error: $1 (exit code)" "$code" "1"
+    check "RDNA2 error: $1" "$err" "error: $4"
+}
+rdna2_error bad_sdwa     2 v2 "word 0 (0x060402fa): SDWA/DPP encodings are not supported"
+rdna2_error bad_uninit   2 v2 "word 0 (0x06040b00): reads v5 before it is written"
+rdna2_error bad_opcode   2 v2 "word 0 (0x0a040300): unsupported VOP2 opcode 5"
+rdna2_error bad_encoding 2 v2 "word 0 (0xbf800000): unsupported instruction encoding (only VOP2 and VOPC are decoded so far)"
+rdna2_error bad_literal  2 v2 "word 0 (0x060402ff): literal constant is missing (end of program)"
+rdna2_error bad_vcc      2 v2 "word 0 (0x02040101): v_cndmask_b32 reads VCC before any compare wrote it"
+rdna2_error madd         2 v9 "output register v9 was never written (and is not an input)"
+
+# Oracle 1: LLVM's assembler must produce exactly the checked-in words for each .s file.
+if python3 tools/asm_rdna2.py --check >/dev/null 2>&1; then
+    for s in tests/rdna2/*.s; do
+        b=$(basename "$s" .s)
+        mine=$(python3 tools/asm_rdna2.py "$s" 2>&1)
+        want=$(sed 's/#.*//' "tests/rdna2/$b.hex" | tr -s ' \t' '\n' | grep -v '^$' | tr 'A-F' 'a-f')
+        check "LLVM assembles $b to the checked-in words" "$mine" "$want"
+    done
+else
+    echo "SKIP: llvm-mc with AMDGPU support not found (sudo apt-get install -y llvm)"
+fi
+
+# Oracle 2: opcode numbers must match AMD's machine-readable ISA spec (download: python3 tools/explore_isa.py).
+python3 tools/check_isa_opcodes.py "$BUILD/rdna2dec" > "$TMP/isa.log" 2>&1; code=$?
+if [ $code -eq 77 ]; then
+    echo "SKIP: AMD ISA spec not downloaded (python3 tools/explore_isa.py)"
+else
+    check "decoder opcodes match AMD's XML spec" "$code" "0"
+    if [ $code -ne 0 ]; then cat "$TMP/isa.log"; fi
+fi
+
 expect_ir_error() {   # file, expected message
     err=$("$BUILD/shadercc" "tests/shaders/$1.ir" 2>&1 >/dev/null); code=$?
     check "IR error: $1 exit code" "$code" "1"

@@ -16,7 +16,7 @@ target_link_libraries(elfinfo loader)
 add_executable(runelf tools/runelf.cpp)
 target_link_libraries(runelf runtime)
 
-add_library(shader shader/translate.cpp shader/eval.cpp)
+add_library(shader shader/translate.cpp shader/eval.cpp shader/rdna2.cpp)
 target_include_directories(shader PUBLIC shader)
 
 add_executable(shadercc tools/shadercc.cpp)
@@ -33,3 +33,6 @@ if(Vulkan_FOUND)
 else()
   message(STATUS "Vulkan not found: vkrun will not be built")
 endif()
+
+add_executable(rdna2dec tools/rdna2dec.cpp)
+target_link_libraries(rdna2dec shader)
