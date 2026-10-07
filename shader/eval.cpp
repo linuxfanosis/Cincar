@@ -20,11 +20,11 @@ bool evaluate(const Program& p, const std::map<std::string, std::vector<float>>&
 
     out.assign(n, 0.0f);
     for (size_t i = 0; i < n; ++i) {
-        std::map<std::string, float> v;
+        std::map<std::string, float> v;      // bools are stored as 0.0 / 1.0 (the parser guarantees correct use)
         for (const auto& name : p.inputs) v[name] = inputs.at(name)[i];
         for (const auto& c : p.consts) v[c.first] = c.second;
         for (const auto& s : p.insts) {
-            float a = v.at(s.a);
+            float a = s.a.empty() ? 0.0f : v.at(s.a);
             float b = s.b.empty() ? 0.0f : v.at(s.b);
             float r;
             if (s.op == "add") r = a + b;
@@ -34,7 +34,14 @@ bool evaluate(const Program& p, const std::map<std::string, std::vector<float>>&
             else if (s.op == "min") r = std::fmin(a, b);
             else if (s.op == "max") r = std::fmax(a, b);
             else if (s.op == "sqrt") r = std::sqrt(a);
-            else r = std::fabs(a);   // abs
+            else if (s.op == "abs") r = std::fabs(a);
+            else if (s.op == "lt") r = a < b ? 1.0f : 0.0f;
+            else if (s.op == "gt") r = a > b ? 1.0f : 0.0f;
+            else if (s.op == "le") r = a <= b ? 1.0f : 0.0f;
+            else if (s.op == "ge") r = a >= b ? 1.0f : 0.0f;
+            else if (s.op == "eq") r = a == b ? 1.0f : 0.0f;
+            else if (s.op == "ne") r = a != b ? 1.0f : 0.0f;
+            else r = v.at(s.c) != 0.0f ? a : b;     // select
             v[s.dst] = r;
         }
         out[i] = v.at(p.out);

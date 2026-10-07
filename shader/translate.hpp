@@ -5,14 +5,21 @@
 #include <vector>
 
 // A parsed shader program (see tests/shaders/*.ir for the text format).
+//
+// Values are typed: `float` (inputs, constants, arithmetic results) or `bool`
+// (results of comparisons). The parser rejects mixing them up.
+//   add sub mul div min max  DST A B     float, float -> float
+//   sqrt abs                 DST A       float -> float
+//   lt gt le ge eq ne        DST A B     float, float -> bool
+//   select                   DST C A B   bool, float, float -> float
 struct Inst {
-    std::string op, dst, a, b;   // b is empty for unary ops (sqrt, abs)
+    std::string op, dst, a, b, c;   // unused operands are empty
 };
 struct Program {
     std::vector<std::string> inputs;                        // input buffers, in binding order
     std::vector<std::pair<std::string, float>> consts;
     std::vector<Inst> insts;
-    std::string out;                                         // the value written to the output buffer
+    std::string out;                                         // the (float) value written to the output buffer
 };
 
 // Parse + validate IR text. On failure returns false with `error` set
@@ -29,6 +36,7 @@ std::string emit_spvasm(const Program& prog);
 bool translate_ir_to_spvasm(const std::string& ir, std::string& spvasm, std::string& error);
 
 // CPU reference evaluator: runs the program for every element index, using plain
-// float arithmetic. This is what the translated shader's results are checked against.
+// float arithmetic (bools are 0.0 / 1.0). This is what the translated shader's
+// results are checked against.
 bool evaluate(const Program& prog, const std::map<std::string, std::vector<float>>& inputs,
               std::vector<float>& out, std::string& error);

@@ -1,0 +1,9 @@
+# clamp x to [0, limit], written with comparisons and select
+in x
+in limit
+const zero 0.0
+lt neg x zero
+gt big x limit
+select t0 big limit x
+select t1 neg zero t0
+out t1

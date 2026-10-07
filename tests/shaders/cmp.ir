@@ -1,0 +1,34 @@
+# encodes all six comparisons of a and b as digits of one number:
+# out = lt*100000 + gt*10000 + le*1000 + ge*100 + eq*10 + ne
+in a
+in b
+const one 1.0
+const zero 0.0
+const m5 100000.0
+const m4 10000.0
+const m3 1000.0
+const m2 100.0
+const m1 10.0
+lt c1 a b
+gt c2 a b
+le c3 a b
+ge c4 a b
+eq c5 a b
+ne c6 a b
+select s1 c1 one zero
+select s2 c2 one zero
+select s3 c3 one zero
+select s4 c4 one zero
+select s5 c5 one zero
+select s6 c6 one zero
+mul t1 s1 m5
+mul t2 s2 m4
+mul t3 s3 m3
+mul t4 s4 m2
+mul t5 s5 m1
+add u1 t1 t2
+add u2 u1 t3
+add u3 u2 t4
+add u4 u3 t5
+add r u4 s6
+out r

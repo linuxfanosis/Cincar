@@ -67,12 +67,12 @@ check "HLE add resolved by name" "$(echo "$msg" | grep -c 'hle\] cincar_add(2, 3
 check "unresolved import named" "$(echo "$msg" | grep -c "unresolved import 'cincar_missing'")" "1"
 
 # GPU track: IR -> SPIR-V assembly, then validate with the real Khronos tools.
-for name in madd names ops; do
+for name in madd names ops select cmp; do
     "$BUILD/shadercc" tests/shaders/$name.ir > "$TMP/$name.spvasm" 2>/dev/null; code=$?
     check "shadercc translates $name.ir" "$code" "0"
 done
 if command -v spirv-as >/dev/null && command -v spirv-val >/dev/null; then
-    for name in madd names ops; do
+    for name in madd names ops select cmp; do
         spirv-as --target-env vulkan1.0 "$TMP/$name.spvasm" -o "$TMP/$name.spv" 2>"$TMP/as.log"; code=$?
         check "spirv-as assembles $name" "$code" "0"
         [ $code -ne 0 ] && cat "$TMP/as.log"
@@ -91,6 +91,8 @@ check "emitted shader reads the count from a push constant" "$(grep -c 'OpVariab
 check "evaluator: madd" "$("$BUILD/shaderrun" tests/shaders/madd.ir a=1,2,3 b=4,5,6)" "10 14 18"
 check "evaluator: every operation" "$("$BUILD/shaderrun" tests/shaders/ops.ir x=16,9 y=8,100)" "2 -21"
 check "evaluator: names that look like internal ids" "$("$BUILD/shaderrun" tests/shaders/names.ir out=1,2 count=3,4 body=5,6)" "10 13"
+check "evaluator: select (clamp)" "$("$BUILD/shaderrun" tests/shaders/select.ir x=-5,3,10 limit=8,8,8)" "0 3 8"
+check "evaluator: all six comparisons" "$("$BUILD/shaderrun" tests/shaders/cmp.ir a=1,2,3 b=2,2,1)" "101001 1110 10101"
 expect_eval_error() {   # expected message, then shaderrun arguments
     msg="$1"; shift
     err=$("$BUILD/shaderrun" "$@" 2>&1 >/dev/null); code=$?
@@ -119,6 +121,10 @@ if [ -x "$BUILD/vkrun" ] && command -v spirv-as >/dev/null; then
     gpu_check "madd, 1 element (63 idle threads)" tests/shaders/madd.ir a=7 b=8
     gpu_check "madd, 64 elements (exactly one workgroup)" tests/shaders/madd.ir a=$(seq -s, 1 64) b=$(seq -s, 1 64)
     gpu_check "input names that look like internal ids" tests/shaders/names.ir out=1,2 count=3,4 body=5,6
+    gpu_check "select (clamp)" tests/shaders/select.ir x=-5,3,10 limit=8,8,8
+    gpu_check "all six comparisons" tests/shaders/cmp.ir a=1,2,3 b=2,2,1
+    X=$(seq -s, -50 49); L=$(printf '20,%.0s' $(seq 100)); L=${L%,}
+    gpu_check "select (clamp), 100 elements" tests/shaders/select.ir x=$X limit=$L
 else
     echo "SKIP: vkrun not built or spirv-as missing"
 fi
@@ -132,6 +138,9 @@ expect_ir_error bad_undefined "error: line 2: undefined value 'missing'"
 expect_ir_error bad_noout "error: no 'out' instruction"
 expect_ir_error bad_duplicate "error: line 2: 'a' is already defined"
 expect_ir_error bad_opcode "error: line 2: unknown instruction 'frobnicate'"
+expect_ir_error bad_float_as_bool "error: line 2: 'a' is float, expected bool"
+expect_ir_error bad_bool_in_arith "error: line 3: 'c' is bool, expected float"
+expect_ir_error bad_bool_output "error: line 3: 'c' is bool, expected float"
 
 echo "not an elf" > "$TMP/bad"
 err=$("$BUILD/runelf" "$TMP/bad" 2>&1); code=$?

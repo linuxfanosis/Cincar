@@ -5,16 +5,22 @@
 
 namespace {
 
+enum class Type { Float, Bool };
+const char* type_name(Type t) { return t == Type::Float ? "float" : "bool"; }
+
 bool valid_name(const std::string& n) {
     if (n.empty() || (!isalpha((unsigned char)n[0]) && n[0] != '_')) return false;
     for (char c : n) if (!isalnum((unsigned char)c) && c != '_') return false;
     return true;
 }
 
-bool is_binary(const std::string& op) {
+bool is_arith(const std::string& op) {
     return op == "add" || op == "sub" || op == "mul" || op == "div" || op == "min" || op == "max";
 }
 bool is_unary(const std::string& op) { return op == "sqrt" || op == "abs"; }
+bool is_compare(const std::string& op) {
+    return op == "lt" || op == "gt" || op == "le" || op == "ge" || op == "eq" || op == "ne";
+}
 
 // Float literal that spirv-as will read as a float (always contains '.' or an exponent).
 std::string float_literal(float v) {
@@ -29,7 +35,7 @@ std::string float_literal(float v) {
 
 bool parse_ir(const std::string& ir, Program& prog, std::string& error) {
     prog = Program{};
-    std::map<std::string, int> defined;
+    std::map<std::string, Type> defined;
 
     auto fail = [&](int line, const std::string& msg) {
         error = "line " + std::to_string(line) + ": " + msg;
@@ -50,42 +56,50 @@ bool parse_ir(const std::string& ir, Program& prog, std::string& error) {
 
         const std::string& op = w[0];
         auto need = [&](size_t n) { return w.size() == n; };
-        auto define = [&](const std::string& name) {
+        auto define = [&](const std::string& name, Type t) {
             if (!valid_name(name)) return fail(line, "invalid name '" + name + "'");
             if (defined.count(name)) return fail(line, "'" + name + "' is already defined");
-            defined[name] = line;
+            defined[name] = t;
             return true;
         };
-        auto use = [&](const std::string& name) {
-            if (!defined.count(name)) return fail(line, "undefined value '" + name + "'");
+        auto use = [&](const std::string& name, Type want) {
+            auto it = defined.find(name);
+            if (it == defined.end()) return fail(line, "undefined value '" + name + "'");
+            if (it->second != want)
+                return fail(line, "'" + name + "' is " + type_name(it->second) + ", expected " + type_name(want));
             return true;
         };
 
         if (op == "in") {
             if (!need(2)) return fail(line, "usage: in NAME");
-            if (!define(w[1])) return false;
+            if (!define(w[1], Type::Float)) return false;
             prog.inputs.push_back(w[1]);
         } else if (op == "const") {
             if (!need(3)) return fail(line, "usage: const NAME VALUE");
             char* end = nullptr;
             double v = std::strtod(w[2].c_str(), &end);
             if (end == w[2].c_str() || *end != 0) return fail(line, "bad number '" + w[2] + "'");
-            if (!define(w[1])) return false;
+            if (!define(w[1], Type::Float)) return false;
             prog.consts.push_back({w[1], (float)v});
-        } else if (is_binary(op)) {
+        } else if (is_arith(op) || is_compare(op)) {
             if (!need(4)) return fail(line, "usage: " + op + " DST A B");
-            if (!use(w[2]) || !use(w[3])) return false;   // operands first: no self-reference
-            if (!define(w[1])) return false;
-            prog.insts.push_back({op, w[1], w[2], w[3]});
+            if (!use(w[2], Type::Float) || !use(w[3], Type::Float)) return false;   // operands first
+            if (!define(w[1], is_compare(op) ? Type::Bool : Type::Float)) return false;
+            prog.insts.push_back({op, w[1], w[2], w[3], ""});
         } else if (is_unary(op)) {
             if (!need(3)) return fail(line, "usage: " + op + " DST A");
-            if (!use(w[2])) return false;
-            if (!define(w[1])) return false;
-            prog.insts.push_back({op, w[1], w[2], ""});
+            if (!use(w[2], Type::Float)) return false;
+            if (!define(w[1], Type::Float)) return false;
+            prog.insts.push_back({op, w[1], w[2], "", ""});
+        } else if (op == "select") {
+            if (!need(5)) return fail(line, "usage: select DST COND A B");
+            if (!use(w[2], Type::Bool) || !use(w[3], Type::Float) || !use(w[4], Type::Float)) return false;
+            if (!define(w[1], Type::Float)) return false;
+            prog.insts.push_back({op, w[1], w[3], w[4], w[2]});   // c = the condition
         } else if (op == "out") {
             if (!need(2)) return fail(line, "usage: out NAME");
             if (!prog.out.empty()) return fail(line, "only one 'out' is supported");
-            if (!use(w[1])) return false;
+            if (!use(w[1], Type::Float)) return false;
             prog.out = w[1];
         } else {
             return fail(line, "unknown instruction '" + op + "'");
@@ -155,14 +169,22 @@ std::string emit_spvasm(const Program& p) {
           << "%v_" << n << " = OpLoad %float %p_" << n << "\n";
     for (const auto& i : p.insts) {
         o << "%v_" << i.dst << " = ";
-        if (i.op == "add")       o << "OpFAdd %float %v_" << i.a << " %v_" << i.b;
-        else if (i.op == "sub")  o << "OpFSub %float %v_" << i.a << " %v_" << i.b;
-        else if (i.op == "mul")  o << "OpFMul %float %v_" << i.a << " %v_" << i.b;
-        else if (i.op == "div")  o << "OpFDiv %float %v_" << i.a << " %v_" << i.b;
-        else if (i.op == "min")  o << "OpExtInst %float %glsl FMin %v_" << i.a << " %v_" << i.b;
-        else if (i.op == "max")  o << "OpExtInst %float %glsl FMax %v_" << i.a << " %v_" << i.b;
+        auto ab = [&]() { return " %v_" + i.a + " %v_" + i.b; };
+        if (i.op == "add")       o << "OpFAdd %float" << ab();
+        else if (i.op == "sub")  o << "OpFSub %float" << ab();
+        else if (i.op == "mul")  o << "OpFMul %float" << ab();
+        else if (i.op == "div")  o << "OpFDiv %float" << ab();
+        else if (i.op == "min")  o << "OpExtInst %float %glsl FMin" << ab();
+        else if (i.op == "max")  o << "OpExtInst %float %glsl FMax" << ab();
         else if (i.op == "sqrt") o << "OpExtInst %float %glsl Sqrt %v_" << i.a;
-        else                     o << "OpExtInst %float %glsl FAbs %v_" << i.a;   // abs
+        else if (i.op == "abs")  o << "OpExtInst %float %glsl FAbs %v_" << i.a;
+        else if (i.op == "lt")   o << "OpFOrdLessThan %bool" << ab();
+        else if (i.op == "gt")   o << "OpFOrdGreaterThan %bool" << ab();
+        else if (i.op == "le")   o << "OpFOrdLessThanEqual %bool" << ab();
+        else if (i.op == "ge")   o << "OpFOrdGreaterThanEqual %bool" << ab();
+        else if (i.op == "eq")   o << "OpFOrdEqual %bool" << ab();
+        else if (i.op == "ne")   o << "OpFUnordNotEqual %bool" << ab();   // like C's !=, true for NaN
+        else /* select */        o << "OpSelect %float %v_" << i.c << ab();
         o << "\n";
     }
     o << "%outptr = OpAccessChain %ptr_f %outbuf %uint_0 %idx\n"
