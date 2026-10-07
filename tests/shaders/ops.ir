@@ -1,0 +1,12 @@
+# exercises every operation:
+# out = |min(max(sqrt(x), y/4), 4)| - y/4
+in x
+in y
+const four 4.0
+sqrt s x
+div d y four
+max m s d
+min n m four
+abs a n
+sub r a d
+out r

@@ -1,15 +1,9 @@
 #include "translate.hpp"
 #include <cstdio>
 #include <cstdlib>
-#include <map>
 #include <sstream>
-#include <vector>
 
 namespace {
-
-struct Inst {
-    std::string op, dst, a, b;   // add/sub/mul: dst = a op b
-};
 
 bool valid_name(const std::string& n) {
     if (n.empty() || (!isalpha((unsigned char)n[0]) && n[0] != '_')) return false;
@@ -17,10 +11,15 @@ bool valid_name(const std::string& n) {
     return true;
 }
 
+bool is_binary(const std::string& op) {
+    return op == "add" || op == "sub" || op == "mul" || op == "div" || op == "min" || op == "max";
+}
+bool is_unary(const std::string& op) { return op == "sqrt" || op == "abs"; }
+
 // Float literal that spirv-as will read as a float (always contains '.' or an exponent).
-std::string float_literal(double v) {
+std::string float_literal(float v) {
     char buf[64];
-    std::snprintf(buf, sizeof(buf), "%.9g", v);
+    std::snprintf(buf, sizeof(buf), "%.9g", (double)v);
     std::string s = buf;
     if (s.find_first_of(".en") == std::string::npos) s += ".0";
     return s;
@@ -28,13 +27,9 @@ std::string float_literal(double v) {
 
 } // namespace
 
-bool translate_ir_to_spvasm(const std::string& ir, std::string& out, std::string& error) {
-    std::vector<std::string> inputs;           // input buffer names, in binding order
-    std::map<std::string, double> consts;      // const name -> value
-    std::vector<std::string> const_order;
-    std::vector<Inst> insts;
-    std::map<std::string, int> defined;        // every value name -> line where defined
-    std::string out_name;
+bool parse_ir(const std::string& ir, Program& prog, std::string& error) {
+    prog = Program{};
+    std::map<std::string, int> defined;
 
     auto fail = [&](int line, const std::string& msg) {
         error = "line " + std::to_string(line) + ": " + msg;
@@ -69,36 +64,43 @@ bool translate_ir_to_spvasm(const std::string& ir, std::string& out, std::string
         if (op == "in") {
             if (!need(2)) return fail(line, "usage: in NAME");
             if (!define(w[1])) return false;
-            inputs.push_back(w[1]);
+            prog.inputs.push_back(w[1]);
         } else if (op == "const") {
             if (!need(3)) return fail(line, "usage: const NAME VALUE");
             char* end = nullptr;
             double v = std::strtod(w[2].c_str(), &end);
             if (end == w[2].c_str() || *end != 0) return fail(line, "bad number '" + w[2] + "'");
             if (!define(w[1])) return false;
-            consts[w[1]] = v;
-            const_order.push_back(w[1]);
-        } else if (op == "add" || op == "sub" || op == "mul") {
+            prog.consts.push_back({w[1], (float)v});
+        } else if (is_binary(op)) {
             if (!need(4)) return fail(line, "usage: " + op + " DST A B");
             if (!use(w[2]) || !use(w[3])) return false;   // operands first: no self-reference
             if (!define(w[1])) return false;
-            insts.push_back({op, w[1], w[2], w[3]});
+            prog.insts.push_back({op, w[1], w[2], w[3]});
+        } else if (is_unary(op)) {
+            if (!need(3)) return fail(line, "usage: " + op + " DST A");
+            if (!use(w[2])) return false;
+            if (!define(w[1])) return false;
+            prog.insts.push_back({op, w[1], w[2], ""});
         } else if (op == "out") {
             if (!need(2)) return fail(line, "usage: out NAME");
-            if (!out_name.empty()) return fail(line, "only one 'out' is supported");
+            if (!prog.out.empty()) return fail(line, "only one 'out' is supported");
             if (!use(w[1])) return false;
-            out_name = w[1];
+            prog.out = w[1];
         } else {
             return fail(line, "unknown instruction '" + op + "'");
         }
     }
-    if (out_name.empty()) { error = "no 'out' instruction"; return false; }
+    if (prog.out.empty()) { error = "no 'out' instruction"; return false; }
+    return true;
+}
 
-    // ---- emit SPIR-V assembly -------------------------------------------------
+std::string emit_spvasm(const Program& p) {
     std::ostringstream o;
-    const size_t out_binding = inputs.size();
+    const size_t out_binding = p.inputs.size();
 
     o << "OpCapability Shader\n"
+      << "%glsl = OpExtInstImport \"GLSL.std.450\"\n"
       << "OpMemoryModel Logical GLSL450\n"
       << "OpEntryPoint GLCompute %main \"main\" %gid\n"
       << "OpExecutionMode %main LocalSize 64 1 1\n"
@@ -106,9 +108,9 @@ bool translate_ir_to_spvasm(const std::string& ir, std::string& out, std::string
       << "OpDecorate %arr ArrayStride 4\n"
       << "OpMemberDecorate %buf 0 Offset 0\n"
       << "OpDecorate %buf BufferBlock\n";
-    for (size_t i = 0; i < inputs.size(); ++i)
-        o << "OpDecorate %buf_" << inputs[i] << " DescriptorSet 0\n"
-          << "OpDecorate %buf_" << inputs[i] << " Binding " << i << "\n";
+    for (size_t i = 0; i < p.inputs.size(); ++i)
+        o << "OpDecorate %buf_" << p.inputs[i] << " DescriptorSet 0\n"
+          << "OpDecorate %buf_" << p.inputs[i] << " Binding " << i << "\n";
     o << "OpDecorate %outbuf DescriptorSet 0\n"
       << "OpDecorate %outbuf Binding " << out_binding << "\n";
 
@@ -125,27 +127,40 @@ bool translate_ir_to_spvasm(const std::string& ir, std::string& out, std::string
       << "%ptr_buf = OpTypePointer Uniform %buf\n"
       << "%ptr_f = OpTypePointer Uniform %float\n"
       << "%uint_0 = OpConstant %uint 0\n";
-    for (const auto& n : inputs) o << "%buf_" << n << " = OpVariable %ptr_buf Uniform\n";
+    for (const auto& n : p.inputs) o << "%buf_" << n << " = OpVariable %ptr_buf Uniform\n";
     o << "%outbuf = OpVariable %ptr_buf Uniform\n";
-    for (const auto& n : const_order)
-        o << "%v_" << n << " = OpConstant %float " << float_literal(consts[n]) << "\n";
+    for (const auto& c : p.consts)
+        o << "%v_" << c.first << " = OpConstant %float " << float_literal(c.second) << "\n";
 
     o << "%main = OpFunction %void None %fn\n"
       << "%entry = OpLabel\n"
       << "%gid_ptr = OpAccessChain %ptr_in_uint %gid %uint_0\n"
       << "%idx = OpLoad %uint %gid_ptr\n";
-    for (const auto& n : inputs)
+    for (const auto& n : p.inputs)
         o << "%p_" << n << " = OpAccessChain %ptr_f %buf_" << n << " %uint_0 %idx\n"
           << "%v_" << n << " = OpLoad %float %p_" << n << "\n";
-    for (const auto& i : insts) {
-        const char* spv = i.op == "add" ? "OpFAdd" : i.op == "sub" ? "OpFSub" : "OpFMul";
-        o << "%v_" << i.dst << " = " << spv << " %float %v_" << i.a << " %v_" << i.b << "\n";
+    for (const auto& i : p.insts) {
+        o << "%v_" << i.dst << " = ";
+        if (i.op == "add")       o << "OpFAdd %float %v_" << i.a << " %v_" << i.b;
+        else if (i.op == "sub")  o << "OpFSub %float %v_" << i.a << " %v_" << i.b;
+        else if (i.op == "mul")  o << "OpFMul %float %v_" << i.a << " %v_" << i.b;
+        else if (i.op == "div")  o << "OpFDiv %float %v_" << i.a << " %v_" << i.b;
+        else if (i.op == "min")  o << "OpExtInst %float %glsl FMin %v_" << i.a << " %v_" << i.b;
+        else if (i.op == "max")  o << "OpExtInst %float %glsl FMax %v_" << i.a << " %v_" << i.b;
+        else if (i.op == "sqrt") o << "OpExtInst %float %glsl Sqrt %v_" << i.a;
+        else                     o << "OpExtInst %float %glsl FAbs %v_" << i.a;   // abs
+        o << "\n";
     }
     o << "%outptr = OpAccessChain %ptr_f %outbuf %uint_0 %idx\n"
-      << "OpStore %outptr %v_" << out_name << "\n"
+      << "OpStore %outptr %v_" << p.out << "\n"
       << "OpReturn\n"
       << "OpFunctionEnd\n";
+    return o.str();
+}
 
-    out = o.str();
+bool translate_ir_to_spvasm(const std::string& ir, std::string& spvasm, std::string& error) {
+    Program p;
+    if (!parse_ir(ir, p, error)) return false;
+    spvasm = emit_spvasm(p);
     return true;
 }

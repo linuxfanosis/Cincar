@@ -16,8 +16,11 @@ target_link_libraries(elfinfo loader)
 add_executable(runelf tools/runelf.cpp)
 target_link_libraries(runelf runtime)
 
-add_library(shader shader/translate.cpp)
+add_library(shader shader/translate.cpp shader/eval.cpp)
 target_include_directories(shader PUBLIC shader)
 
 add_executable(shadercc tools/shadercc.cpp)
 target_link_libraries(shadercc shader)
+
+add_executable(shaderrun tools/shaderrun.cpp)
+target_link_libraries(shaderrun shader)

@@ -67,12 +67,12 @@ check "HLE add resolved by name" "$(echo "$msg" | grep -c 'hle\] cincar_add(2, 3
 check "unresolved import named" "$(echo "$msg" | grep -c "unresolved import 'cincar_missing'")" "1"
 
 # GPU track: IR -> SPIR-V assembly, then validate with the real Khronos tools.
-for name in madd names; do
+for name in madd names ops; do
     "$BUILD/shadercc" tests/shaders/$name.ir > "$TMP/$name.spvasm" 2>/dev/null; code=$?
     check "shadercc translates $name.ir" "$code" "0"
 done
 if command -v spirv-as >/dev/null && command -v spirv-val >/dev/null; then
-    for name in madd names; do
+    for name in madd names ops; do
         spirv-as --target-env vulkan1.0 "$TMP/$name.spvasm" -o "$TMP/$name.spv" 2>"$TMP/as.log"; code=$?
         check "spirv-as assembles $name" "$code" "0"
         [ $code -ne 0 ] && cat "$TMP/as.log"
@@ -83,6 +83,20 @@ if command -v spirv-as >/dev/null && command -v spirv-val >/dev/null; then
 else
     echo "SKIP: spirv-as/spirv-val not installed (sudo apt-get install -y spirv-tools)"
 fi
+# CPU reference evaluator: the numbers a correct shader must produce.
+check "evaluator: madd" "$("$BUILD/shaderrun" tests/shaders/madd.ir a=1,2,3 b=4,5,6)" "10 14 18"
+check "evaluator: every operation" "$("$BUILD/shaderrun" tests/shaders/ops.ir x=16,9 y=8,100)" "2 -21"
+expect_eval_error() {   # expected message, then shaderrun arguments
+    msg="$1"; shift
+    err=$("$BUILD/shaderrun" "$@" 2>&1 >/dev/null); code=$?
+    check "evaluator error: $msg (exit code)" "$code" "1"
+    check "evaluator error: $msg" "$err" "error: $msg"
+}
+expect_eval_error "input 'b' has a different length" tests/shaders/madd.ir a=1,2 b=1
+expect_eval_error "missing data for input 'b'" tests/shaders/madd.ir a=1,2
+expect_eval_error "data given for unknown input 'c'" tests/shaders/madd.ir a=1 b=1 c=1
+expect_eval_error "bad number 'x'" tests/shaders/madd.ir a=1,x b=1,2
+
 expect_ir_error() {   # file, expected message
     err=$("$BUILD/shadercc" "tests/shaders/$1.ir" 2>&1 >/dev/null); code=$?
     check "IR error: $1 exit code" "$code" "1"
