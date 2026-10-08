@@ -6,12 +6,19 @@
 
 // A parsed shader program (see tests/shaders/*.ir for the text format).
 //
-// Values are typed: `float` (inputs, constants, arithmetic results, mutable vars) or
-// `bool` (results of comparisons). The parser rejects mixing them up.
+// Values are typed: `float` (inputs, constants, arithmetic results, mutable vars),
+// `bool` (results of comparisons) or `vec4`. The parser rejects mixing them up.
 //   add sub mul div min max  DST A B     float, float -> float
 //   sqrt abs                 DST A       float -> float
 //   lt gt le ge eq ne        DST A B     float, float -> bool
 //   select                   DST C A B   bool, float, float -> float
+//
+// Vectors (SSA values only: no vec4 vars, and nothing carried across loops yet):
+//   vec4 DST X Y Z W         build a vec4 from four floats
+//   get DST V I              component I (a literal 0..3) of a vec4 -> float
+//   vadd vsub vmul DST A B   component-wise, vec4 vec4 -> vec4
+//   vscale DST V S           vec4 * float -> vec4
+//   dot DST A B              vec4 vec4 -> float
 //
 // Mutable variables and loops:
 //   var NAME VALUE           declare a mutable float, initialised from VALUE (outside loops only)
@@ -21,8 +28,9 @@
 // Names defined inside a loop are not visible after it; vars are.
 struct Inst {
     // op is one of the operations above, or "var", "set", "loop", "end", "iter".
-    // For "loop", `a` holds the count as text. Unused operands are empty.
-    std::string op, dst, a, b, c;
+    // For "loop", `a` holds the count as text; for "get", `b` holds the component index as text.
+    // Unused operands are empty.
+    std::string op, dst, a, b, c, d;
 };
 struct Program {
     std::vector<std::string> inputs;                        // input buffers, in binding order

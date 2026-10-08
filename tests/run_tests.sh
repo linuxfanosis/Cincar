@@ -67,12 +67,12 @@ check "HLE add resolved by name" "$(echo "$msg" | grep -c 'hle\] cincar_add(2, 3
 check "unresolved import named" "$(echo "$msg" | grep -c "unresolved import 'cincar_missing'")" "1"
 
 # GPU track: IR -> SPIR-V assembly, then validate with the real Khronos tools.
-for name in madd names ops select cmp loop_sum newton_sqrt two_loops; do
+for name in madd names ops select cmp loop_sum newton_sqrt two_loops vec_dot vec_ops; do
     "$BUILD/shadercc" tests/shaders/$name.ir > "$TMP/$name.spvasm" 2>/dev/null; code=$?
     check "shadercc translates $name.ir" "$code" "0"
 done
 if command -v spirv-as >/dev/null && command -v spirv-val >/dev/null; then
-    for name in madd names ops select cmp loop_sum newton_sqrt two_loops; do
+    for name in madd names ops select cmp loop_sum newton_sqrt two_loops vec_dot vec_ops; do
         spirv-as --target-env vulkan1.0 "$TMP/$name.spvasm" -o "$TMP/$name.spv" 2>"$TMP/as.log"; code=$?
         check "spirv-as assembles $name" "$code" "0"
         [ $code -ne 0 ] && cat "$TMP/as.log"
@@ -98,6 +98,10 @@ check "two loops get two loop headers" "$(grep -c 'OpLoopMerge' "$TMP/two_loops.
 check "evaluator: loop with accumulator and iteration index" "$("$BUILD/shaderrun" tests/shaders/loop_sum.ir x=1,2,3)" "10 20 30"
 check "evaluator: Newton square root" "$("$BUILD/shaderrun" tests/shaders/newton_sqrt.ir x=4,9,2)" "2 3 1.41421"
 check "evaluator: two loops in a row" "$("$BUILD/shaderrun" tests/shaders/two_loops.ir x=1,2,10)" "7 11 43"
+check "emitted vec4 kernel builds vectors" "$(grep -c 'OpCompositeConstruct' "$TMP/vec_dot.spvasm")" "2"
+check "emitted vec4 kernel uses OpDot" "$(grep -c 'OpDot' "$TMP/vec_dot.spvasm")" "1"
+check "evaluator: vec4 dot product" "$("$BUILD/shaderrun" tests/shaders/vec_dot.ir x=1,2,0 y=1,0,0 z=1,0,1)" "14 9 9"
+check "evaluator: vec4 add/sub/mul/scale/get" "$("$BUILD/shaderrun" tests/shaders/vec_ops.ir a=3,1,5 b=5,7,2)" "12472 24216 2605.5"
 expect_eval_error() {   # expected message, then shaderrun arguments
     msg="$1"; shift
     err=$("$BUILD/shaderrun" "$@" 2>&1 >/dev/null); code=$?
@@ -133,6 +137,9 @@ if [ -x "$BUILD/vkrun" ] && command -v spirv-as >/dev/null; then
     gpu_check "loop with accumulator" tests/shaders/loop_sum.ir x=1,2,3
     gpu_check "two loops in a row" tests/shaders/two_loops.ir x=1,2,10
     gpu_check "Newton square root, 100 elements" tests/shaders/newton_sqrt.ir x=$(seq -s, 1 100)
+    gpu_check "vec4 dot product" tests/shaders/vec_dot.ir x=1,2,0 y=1,0,0 z=1,0,1
+    gpu_check "vec4 add/sub/mul/scale/get" tests/shaders/vec_ops.ir a=3,1,5 b=5,7,2
+    gpu_check "vec4 add/sub/mul/scale/get, 100 elements" tests/shaders/vec_ops.ir a=$(seq -s, 1 100) b=$(seq -s, 101 200)
 else
     echo "SKIP: vkrun not built or spirv-as missing"
 fi
@@ -208,6 +215,11 @@ expect_ir_error bad_set_nonvar "error: line 2: 'x' is not a var, so it cannot be
 expect_ir_error bad_iter_outside "error: line 2: 'iter' is only valid inside a loop"
 expect_ir_error bad_var_in_loop "error: line 3: 'var' must be declared outside loops"
 expect_ir_error bad_loop_count "error: line 2: bad loop count '0' (expected an integer from 1 to 100000)"
+expect_ir_error bad_vec_as_float "error: line 3: 'v' is vec4, expected float"
+expect_ir_error bad_float_as_vec "error: line 3: 'a' is float, expected vec4"
+expect_ir_error bad_vec_out "error: line 3: 'v' is vec4, expected float"
+expect_ir_error bad_get_index "error: line 3: bad component index '4' (expected 0, 1, 2 or 3)"
+expect_ir_error bad_vec4_args "error: line 2: usage: vec4 DST X Y Z W"
 
 echo "not an elf" > "$TMP/bad"
 err=$("$BUILD/runelf" "$TMP/bad" 2>&1); code=$?

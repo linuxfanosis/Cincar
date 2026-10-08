@@ -6,9 +6,12 @@
 
 namespace {
 
-enum class Type { Float, Bool, Var };
+enum class Type { Float, Bool, Var, Vec4 };
 // A var is a float as far as users are concerned.
-const char* type_name(Type t) { return t == Type::Bool ? "bool" : "float"; }
+Type kind(Type t) { return t == Type::Var ? Type::Float : t; }
+const char* type_name(Type t) {
+    switch (kind(t)) { case Type::Bool: return "bool"; case Type::Vec4: return "vec4"; default: return "float"; }
+}
 
 bool valid_name(const std::string& n) {
     if (n.empty() || (!isalpha((unsigned char)n[0]) && n[0] != '_')) return false;
@@ -76,8 +79,7 @@ bool parse_ir(const std::string& ir, Program& prog, std::string& error) {
             if (it == defined.end()) return fail(line, "undefined value '" + name + "'");
             if (!it->second.visible)
                 return fail(line, "'" + name + "' was defined inside a loop and is not visible here");
-            bool is_bool = it->second.type == Type::Bool;
-            if (is_bool != (want == Type::Bool))
+            if (kind(it->second.type) != want)
                 return fail(line, "'" + name + "' is " + type_name(it->second.type) + ", expected " + type_name(want));
             return true;
         };
@@ -110,6 +112,33 @@ bool parse_ir(const std::string& ir, Program& prog, std::string& error) {
             if (!use(w[2], Type::Bool) || !use(w[3], Type::Float) || !use(w[4], Type::Float)) return false;
             if (!define(w[1], Type::Float)) return false;
             prog.insts.push_back({op, w[1], w[3], w[4], w[2]});   // c = the condition
+        } else if (op == "vec4") {
+            if (!need(6)) return fail(line, "usage: vec4 DST X Y Z W");
+            for (int k = 2; k <= 5; ++k) if (!use(w[k], Type::Float)) return false;
+            if (!define(w[1], Type::Vec4)) return false;
+            prog.insts.push_back({"vec4", w[1], w[2], w[3], w[4], w[5]});
+        } else if (op == "get") {
+            if (!need(4)) return fail(line, "usage: get DST V I");
+            if (!use(w[2], Type::Vec4)) return false;
+            if (w[3].size() != 1 || w[3][0] < '0' || w[3][0] > '3')
+                return fail(line, "bad component index '" + w[3] + "' (expected 0, 1, 2 or 3)");
+            if (!define(w[1], Type::Float)) return false;
+            prog.insts.push_back({"get", w[1], w[2], w[3], "", ""});
+        } else if (op == "vadd" || op == "vsub" || op == "vmul") {
+            if (!need(4)) return fail(line, "usage: " + op + " DST A B");
+            if (!use(w[2], Type::Vec4) || !use(w[3], Type::Vec4)) return false;
+            if (!define(w[1], Type::Vec4)) return false;
+            prog.insts.push_back({op, w[1], w[2], w[3], "", ""});
+        } else if (op == "vscale") {
+            if (!need(4)) return fail(line, "usage: vscale DST V S");
+            if (!use(w[2], Type::Vec4) || !use(w[3], Type::Float)) return false;
+            if (!define(w[1], Type::Vec4)) return false;
+            prog.insts.push_back({"vscale", w[1], w[2], w[3], "", ""});
+        } else if (op == "dot") {
+            if (!need(4)) return fail(line, "usage: dot DST A B");
+            if (!use(w[2], Type::Vec4) || !use(w[3], Type::Vec4)) return false;
+            if (!define(w[1], Type::Float)) return false;
+            prog.insts.push_back({"dot", w[1], w[2], w[3], "", ""});
         } else if (op == "var") {
             if (!need(3)) return fail(line, "usage: var NAME VALUE");
             if (depth != 0) return fail(line, "'var' must be declared outside loops");
@@ -204,6 +233,7 @@ std::string emit_spvasm(const Program& p) {
       << "%ptr_pc_struct = OpTypePointer PushConstant %pc_struct\n"
       << "%ptr_pc_uint = OpTypePointer PushConstant %uint\n"
       << "%pc = OpVariable %ptr_pc_struct PushConstant\n"
+      << "%vec4 = OpTypeVector %float 4\n"
       << "%ptr_fn_float = OpTypePointer Function %float\n"
       << "%ptr_fn_uint = OpTypePointer Function %uint\n";
     for (const auto& n : p.inputs) o << "%buf_" << n << " = OpVariable %ptr_buf Uniform\n";
@@ -273,6 +303,19 @@ std::string emit_spvasm(const Program& p) {
             std::string t = "%itl_" + std::to_string(ld++);
             o << t << " = OpLoad %uint %loop_i_" << cur << "\n"
               << "%v_" << i.dst << " = OpConvertUToF %float " << t << "\n";
+        } else if (i.op == "vec4") {
+            std::string a = operand(i.a), b = operand(i.b), cc = operand(i.c), d = operand(i.d);
+            o << "%v_" << i.dst << " = OpCompositeConstruct %vec4 " << a << " " << b << " " << cc << " " << d << "\n";
+        } else if (i.op == "get") {
+            o << "%v_" << i.dst << " = OpCompositeExtract %float %v_" << i.a << " " << i.b << "\n";
+        } else if (i.op == "vadd" || i.op == "vsub" || i.op == "vmul") {
+            const char* spv = i.op == "vadd" ? "OpFAdd" : i.op == "vsub" ? "OpFSub" : "OpFMul";
+            o << "%v_" << i.dst << " = " << spv << " %vec4 %v_" << i.a << " %v_" << i.b << "\n";
+        } else if (i.op == "vscale") {
+            std::string s = operand(i.b);
+            o << "%v_" << i.dst << " = OpVectorTimesScalar %vec4 %v_" << i.a << " " << s << "\n";
+        } else if (i.op == "dot") {
+            o << "%v_" << i.dst << " = OpDot %float %v_" << i.a << " %v_" << i.b << "\n";
         } else {
             std::string a = operand(i.a);
             std::string b = i.b.empty() ? "" : operand(i.b);
@@ -322,7 +365,9 @@ std::string print_ir(const Program& p) {
         o << "const " << k.first << " " << buf << "\n";
     }
     for (const auto& i : p.insts) {
-        if (i.op == "select")                       // select DST COND A B
+        if (i.op == "vec4")                         // vec4 DST X Y Z W
+            o << "vec4 " << i.dst << " " << i.a << " " << i.b << " " << i.c << " " << i.d << "\n";
+        else if (i.op == "select")                  // select DST COND A B
             o << "select " << i.dst << " " << i.c << " " << i.a << " " << i.b << "\n";
         else if (i.op == "var" || i.op == "set")    // var/set NAME VALUE
             o << i.op << " " << i.dst << " " << i.a << "\n";

@@ -1,0 +1,13 @@
+# out = dot((x, y, z, 1), (2, 3, 4, 5)) = 2x + 3y + 4z + 5
+in x
+in y
+in z
+const one 1.0
+const two 2.0
+const three 3.0
+const four 4.0
+const five 5.0
+vec4 v x y z one
+vec4 w two three four five
+dot d v w
+out d

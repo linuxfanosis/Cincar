@@ -1,0 +1,27 @@
+# exercises vadd, vsub, vmul, vscale and get on all four components.
+# k = 0.5 * ((a+b)(a-b), (a+b)(b-a), (a+1)(a-1), (b+1)(b-1)) = ((a²-b²)/2, (b²-a²)/2, (a²-1)/2, (b²-1)/2)
+# out = k0 + 10*k1 + 100*k2 + 1000*k3 (a different weight per component, so a wrong lane shows up)
+in a
+in b
+const one 1.0
+const half 0.5
+const ten 10.0
+const hundred 100.0
+const thousand 1000.0
+vec4 u a b a b
+vec4 w b a one one
+vadd s u w
+vsub t u w
+vmul m s t
+vscale k m half
+get k0 k 0
+get k1 k 1
+get k2 k 2
+get k3 k 3
+mul p1 k1 ten
+mul p2 k2 hundred
+mul p3 k3 thousand
+add q0 k0 p1
+add q1 q0 p2
+add q2 q1 p3
+out q2
