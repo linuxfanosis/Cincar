@@ -1,0 +1,11 @@
+# out = x * (0 + 1 + 2 + 3 + 4) = 10x      (a loop with an accumulator and the iteration index)
+in x
+const zero 0.0
+var acc zero
+loop 5
+  iter i
+  mul t x i
+  add u acc t
+  set acc u
+end
+out acc

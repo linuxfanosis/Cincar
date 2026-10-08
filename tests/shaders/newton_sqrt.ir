@@ -1,0 +1,11 @@
+# square root by 10 Newton steps: g = (g + x/g) / 2, starting from g = x   (x > 0)
+in x
+const half 0.5
+var g x
+loop 10
+  div q x g
+  add s g q
+  mul h s half
+  set g h
+end
+out g

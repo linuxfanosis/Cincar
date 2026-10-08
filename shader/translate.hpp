@@ -6,18 +6,28 @@
 
 // A parsed shader program (see tests/shaders/*.ir for the text format).
 //
-// Values are typed: `float` (inputs, constants, arithmetic results) or `bool`
-// (results of comparisons). The parser rejects mixing them up.
+// Values are typed: `float` (inputs, constants, arithmetic results, mutable vars) or
+// `bool` (results of comparisons). The parser rejects mixing them up.
 //   add sub mul div min max  DST A B     float, float -> float
 //   sqrt abs                 DST A       float -> float
 //   lt gt le ge eq ne        DST A B     float, float -> bool
 //   select                   DST C A B   bool, float, float -> float
+//
+// Mutable variables and loops:
+//   var NAME VALUE           declare a mutable float, initialised from VALUE (outside loops only)
+//   set NAME VALUE           assign to a var
+//   loop COUNT ... end       repeat the body COUNT times (1..100000); loops cannot nest yet
+//   iter NAME                inside a loop: the 0-based iteration index, as a float
+// Names defined inside a loop are not visible after it; vars are.
 struct Inst {
-    std::string op, dst, a, b, c;   // unused operands are empty
+    // op is one of the operations above, or "var", "set", "loop", "end", "iter".
+    // For "loop", `a` holds the count as text. Unused operands are empty.
+    std::string op, dst, a, b, c;
 };
 struct Program {
     std::vector<std::string> inputs;                        // input buffers, in binding order
     std::vector<std::pair<std::string, float>> consts;
+    std::vector<std::string> vars;                          // mutable variables, in declaration order
     std::vector<Inst> insts;
     std::string out;                                         // the (float) value written to the output buffer
 };

@@ -1,12 +1,14 @@
 #include "translate.hpp"
 #include <cstdio>
 #include <cstdlib>
+#include <set>
 #include <sstream>
 
 namespace {
 
-enum class Type { Float, Bool };
-const char* type_name(Type t) { return t == Type::Float ? "float" : "bool"; }
+enum class Type { Float, Bool, Var };
+// A var is a float as far as users are concerned.
+const char* type_name(Type t) { return t == Type::Bool ? "bool" : "float"; }
 
 bool valid_name(const std::string& n) {
     if (n.empty() || (!isalpha((unsigned char)n[0]) && n[0] != '_')) return false;
@@ -31,11 +33,16 @@ std::string float_literal(float v) {
     return s;
 }
 
+struct Entry { Type type; bool visible; };
+
 } // namespace
 
 bool parse_ir(const std::string& ir, Program& prog, std::string& error) {
     prog = Program{};
-    std::map<std::string, Type> defined;
+    std::map<std::string, Entry> defined;        // every name ever defined (names are never reused)
+    int depth = 0;                               // 0 = top level, 1 = inside a loop
+    int loop_line = 0;
+    std::vector<std::string> loop_names;         // names defined in the current loop
 
     auto fail = [&](int line, const std::string& msg) {
         error = "line " + std::to_string(line) + ": " + msg;
@@ -59,23 +66,30 @@ bool parse_ir(const std::string& ir, Program& prog, std::string& error) {
         auto define = [&](const std::string& name, Type t) {
             if (!valid_name(name)) return fail(line, "invalid name '" + name + "'");
             if (defined.count(name)) return fail(line, "'" + name + "' is already defined");
-            defined[name] = t;
+            defined[name] = {t, true};
+            if (depth == 1) loop_names.push_back(name);
             return true;
         };
+        // A value of type `want` (float includes vars) that is visible here.
         auto use = [&](const std::string& name, Type want) {
             auto it = defined.find(name);
             if (it == defined.end()) return fail(line, "undefined value '" + name + "'");
-            if (it->second != want)
-                return fail(line, "'" + name + "' is " + type_name(it->second) + ", expected " + type_name(want));
+            if (!it->second.visible)
+                return fail(line, "'" + name + "' was defined inside a loop and is not visible here");
+            bool is_bool = it->second.type == Type::Bool;
+            if (is_bool != (want == Type::Bool))
+                return fail(line, "'" + name + "' is " + type_name(it->second.type) + ", expected " + type_name(want));
             return true;
         };
 
         if (op == "in") {
             if (!need(2)) return fail(line, "usage: in NAME");
+            if (depth != 0) return fail(line, "'in' must be outside loops");
             if (!define(w[1], Type::Float)) return false;
             prog.inputs.push_back(w[1]);
         } else if (op == "const") {
             if (!need(3)) return fail(line, "usage: const NAME VALUE");
+            if (depth != 0) return fail(line, "'const' must be outside loops");
             char* end = nullptr;
             double v = std::strtod(w[2].c_str(), &end);
             if (end == w[2].c_str() || *end != 0) return fail(line, "bad number '" + w[2] + "'");
@@ -96,8 +110,45 @@ bool parse_ir(const std::string& ir, Program& prog, std::string& error) {
             if (!use(w[2], Type::Bool) || !use(w[3], Type::Float) || !use(w[4], Type::Float)) return false;
             if (!define(w[1], Type::Float)) return false;
             prog.insts.push_back({op, w[1], w[3], w[4], w[2]});   // c = the condition
+        } else if (op == "var") {
+            if (!need(3)) return fail(line, "usage: var NAME VALUE");
+            if (depth != 0) return fail(line, "'var' must be declared outside loops");
+            if (!use(w[2], Type::Float)) return false;
+            if (!define(w[1], Type::Var)) return false;
+            prog.vars.push_back(w[1]);
+            prog.insts.push_back({"var", w[1], w[2], "", ""});
+        } else if (op == "set") {
+            if (!need(3)) return fail(line, "usage: set NAME VALUE");
+            auto it = defined.find(w[1]);
+            if (it == defined.end()) return fail(line, "undefined value '" + w[1] + "'");
+            if (it->second.type != Type::Var) return fail(line, "'" + w[1] + "' is not a var, so it cannot be assigned");
+            if (!use(w[2], Type::Float)) return false;
+            prog.insts.push_back({"set", w[1], w[2], "", ""});
+        } else if (op == "loop") {
+            if (!need(2)) return fail(line, "usage: loop COUNT");
+            if (depth != 0) return fail(line, "nested loops are not supported yet");
+            char* end = nullptr;
+            long n = std::strtol(w[1].c_str(), &end, 10);
+            if (end == w[1].c_str() || *end != 0 || n < 1 || n > 100000)
+                return fail(line, "bad loop count '" + w[1] + "' (expected an integer from 1 to 100000)");
+            depth = 1;
+            loop_line = line;
+            loop_names.clear();
+            prog.insts.push_back({"loop", "", std::to_string(n), "", ""});
+        } else if (op == "end") {
+            if (!need(1)) return fail(line, "usage: end");
+            if (depth != 1) return fail(line, "'end' without a matching 'loop'");
+            for (const auto& n : loop_names) defined[n].visible = false;   // loop-local names go out of scope
+            depth = 0;
+            prog.insts.push_back({"end", "", "", "", ""});
+        } else if (op == "iter") {
+            if (!need(2)) return fail(line, "usage: iter NAME");
+            if (depth != 1) return fail(line, "'iter' is only valid inside a loop");
+            if (!define(w[1], Type::Float)) return false;
+            prog.insts.push_back({"iter", w[1], "", "", ""});
         } else if (op == "out") {
             if (!need(2)) return fail(line, "usage: out NAME");
+            if (depth != 0) return fail(line, "'out' must be outside loops");
             if (!prog.out.empty()) return fail(line, "only one 'out' is supported");
             if (!use(w[1], Type::Float)) return false;
             prog.out = w[1];
@@ -105,6 +156,7 @@ bool parse_ir(const std::string& ir, Program& prog, std::string& error) {
             return fail(line, "unknown instruction '" + op + "'");
         }
     }
+    if (depth != 0) return fail(loop_line, "'loop' is missing its 'end'");
     if (prog.out.empty()) { error = "no 'out' instruction"; return false; }
     return true;
 }
@@ -112,6 +164,9 @@ bool parse_ir(const std::string& ir, Program& prog, std::string& error) {
 std::string emit_spvasm(const Program& p) {
     std::ostringstream o;
     const size_t out_binding = p.inputs.size();
+    const std::set<std::string> vars(p.vars.begin(), p.vars.end());
+    std::vector<std::string> loop_counts;                    // trip count of each loop, in order
+    for (const auto& i : p.insts) if (i.op == "loop") loop_counts.push_back(i.a);
 
     o << "OpCapability Shader\n"
       << "%glsl = OpExtInstImport \"GLSL.std.450\"\n"
@@ -143,19 +198,27 @@ std::string emit_spvasm(const Program& p) {
       << "%ptr_buf = OpTypePointer Uniform %buf\n"
       << "%ptr_f = OpTypePointer Uniform %float\n"
       << "%uint_0 = OpConstant %uint 0\n"
+      << "%uint_1 = OpConstant %uint 1\n"
       << "%bool = OpTypeBool\n"
       << "%pc_struct = OpTypeStruct %uint\n"
       << "%ptr_pc_struct = OpTypePointer PushConstant %pc_struct\n"
       << "%ptr_pc_uint = OpTypePointer PushConstant %uint\n"
-      << "%pc = OpVariable %ptr_pc_struct PushConstant\n";
+      << "%pc = OpVariable %ptr_pc_struct PushConstant\n"
+      << "%ptr_fn_float = OpTypePointer Function %float\n"
+      << "%ptr_fn_uint = OpTypePointer Function %uint\n";
     for (const auto& n : p.inputs) o << "%buf_" << n << " = OpVariable %ptr_buf Uniform\n";
     o << "%outbuf = OpVariable %ptr_buf Uniform\n";
     for (const auto& c : p.consts)
         o << "%v_" << c.first << " = OpConstant %float " << float_literal(c.second) << "\n";
+    for (size_t k = 0; k < loop_counts.size(); ++k)
+        o << "%loop_count_" << k << " = OpConstant %uint " << loop_counts[k] << "\n";
 
     o << "%main = OpFunction %void None %fn\n"
-      << "%entry = OpLabel\n"
-      << "%gid_ptr = OpAccessChain %ptr_in_uint %gid %uint_0\n"
+      << "%entry = OpLabel\n";
+    // Function-scope variables must all be declared at the start of the first block.
+    for (const auto& n : p.vars) o << "%var_" << n << " = OpVariable %ptr_fn_float Function\n";
+    for (size_t k = 0; k < loop_counts.size(); ++k) o << "%loop_i_" << k << " = OpVariable %ptr_fn_uint Function\n";
+    o << "%gid_ptr = OpAccessChain %ptr_in_uint %gid %uint_0\n"
       << "%idx = OpLoad %uint %gid_ptr\n"
       // Bounds check: only threads with idx < count (a push constant) do any work.
       << "%count_ptr = OpAccessChain %ptr_pc_uint %pc %uint_0\n"
@@ -167,28 +230,75 @@ std::string emit_spvasm(const Program& p) {
     for (const auto& n : p.inputs)
         o << "%p_" << n << " = OpAccessChain %ptr_f %buf_" << n << " %uint_0 %idx\n"
           << "%v_" << n << " = OpLoad %float %p_" << n << "\n";
+
+    int ld = 0;      // counter for the temporaries that read vars
+    // The SPIR-V id holding the current value of `name`; for a var this emits a load first.
+    auto operand = [&](const std::string& name) -> std::string {
+        if (vars.count(name)) {
+            std::string id = "%ld_" + std::to_string(ld++);
+            o << id << " = OpLoad %float %var_" << name << "\n";
+            return id;
+        }
+        return "%v_" + name;
+    };
+
+    int next_loop = 0, cur = -1;
     for (const auto& i : p.insts) {
-        o << "%v_" << i.dst << " = ";
-        auto ab = [&]() { return " %v_" + i.a + " %v_" + i.b; };
-        if (i.op == "add")       o << "OpFAdd %float" << ab();
-        else if (i.op == "sub")  o << "OpFSub %float" << ab();
-        else if (i.op == "mul")  o << "OpFMul %float" << ab();
-        else if (i.op == "div")  o << "OpFDiv %float" << ab();
-        else if (i.op == "min")  o << "OpExtInst %float %glsl FMin" << ab();
-        else if (i.op == "max")  o << "OpExtInst %float %glsl FMax" << ab();
-        else if (i.op == "sqrt") o << "OpExtInst %float %glsl Sqrt %v_" << i.a;
-        else if (i.op == "abs")  o << "OpExtInst %float %glsl FAbs %v_" << i.a;
-        else if (i.op == "lt")   o << "OpFOrdLessThan %bool" << ab();
-        else if (i.op == "gt")   o << "OpFOrdGreaterThan %bool" << ab();
-        else if (i.op == "le")   o << "OpFOrdLessThanEqual %bool" << ab();
-        else if (i.op == "ge")   o << "OpFOrdGreaterThanEqual %bool" << ab();
-        else if (i.op == "eq")   o << "OpFOrdEqual %bool" << ab();
-        else if (i.op == "ne")   o << "OpFUnordNotEqual %bool" << ab();   // like C's !=, true for NaN
-        else /* select */        o << "OpSelect %float %v_" << i.c << ab();
-        o << "\n";
+        if (i.op == "var" || i.op == "set") {
+            std::string v = operand(i.a);
+            o << "OpStore %var_" << i.dst << " " << v << "\n";
+        } else if (i.op == "loop") {
+            cur = next_loop++;
+            const std::string k = std::to_string(cur);
+            o << "OpStore %loop_i_" << k << " %uint_0\n"
+              << "OpBranch %loop_header_" << k << "\n"
+              << "%loop_header_" << k << " = OpLabel\n"
+              << "OpLoopMerge %loop_merge_" << k << " %loop_continue_" << k << " None\n"
+              << "OpBranch %loop_cond_" << k << "\n"
+              << "%loop_cond_" << k << " = OpLabel\n"
+              << "%i_cur_" << k << " = OpLoad %uint %loop_i_" << k << "\n"
+              << "%loop_ok_" << k << " = OpULessThan %bool %i_cur_" << k << " %loop_count_" << k << "\n"
+              << "OpBranchConditional %loop_ok_" << k << " %loop_body_" << k << " %loop_merge_" << k << "\n"
+              << "%loop_body_" << k << " = OpLabel\n";
+        } else if (i.op == "end") {
+            const std::string k = std::to_string(cur);
+            o << "OpBranch %loop_continue_" << k << "\n"
+              << "%loop_continue_" << k << " = OpLabel\n"
+              << "%i_next_ld_" << k << " = OpLoad %uint %loop_i_" << k << "\n"
+              << "%i_next_" << k << " = OpIAdd %uint %i_next_ld_" << k << " %uint_1\n"
+              << "OpStore %loop_i_" << k << " %i_next_" << k << "\n"
+              << "OpBranch %loop_header_" << k << "\n"
+              << "%loop_merge_" << k << " = OpLabel\n";
+        } else if (i.op == "iter") {
+            std::string t = "%itl_" + std::to_string(ld++);
+            o << t << " = OpLoad %uint %loop_i_" << cur << "\n"
+              << "%v_" << i.dst << " = OpConvertUToF %float " << t << "\n";
+        } else {
+            std::string a = operand(i.a);
+            std::string b = i.b.empty() ? "" : operand(i.b);
+            o << "%v_" << i.dst << " = ";
+            auto ab = [&]() { return " " + a + " " + b; };
+            if (i.op == "add")       o << "OpFAdd %float" << ab();
+            else if (i.op == "sub")  o << "OpFSub %float" << ab();
+            else if (i.op == "mul")  o << "OpFMul %float" << ab();
+            else if (i.op == "div")  o << "OpFDiv %float" << ab();
+            else if (i.op == "min")  o << "OpExtInst %float %glsl FMin" << ab();
+            else if (i.op == "max")  o << "OpExtInst %float %glsl FMax" << ab();
+            else if (i.op == "sqrt") o << "OpExtInst %float %glsl Sqrt " << a;
+            else if (i.op == "abs")  o << "OpExtInst %float %glsl FAbs " << a;
+            else if (i.op == "lt")   o << "OpFOrdLessThan %bool" << ab();
+            else if (i.op == "gt")   o << "OpFOrdGreaterThan %bool" << ab();
+            else if (i.op == "le")   o << "OpFOrdLessThanEqual %bool" << ab();
+            else if (i.op == "ge")   o << "OpFOrdGreaterThanEqual %bool" << ab();
+            else if (i.op == "eq")   o << "OpFOrdEqual %bool" << ab();
+            else if (i.op == "ne")   o << "OpFUnordNotEqual %bool" << ab();   // like C's !=, true for NaN
+            else /* select */        o << "OpSelect %float %v_" << i.c << ab();
+            o << "\n";
+        }
     }
+    std::string outv = operand(p.out);
     o << "%outptr = OpAccessChain %ptr_f %outbuf %uint_0 %idx\n"
-      << "OpStore %outptr %v_" << p.out << "\n"
+      << "OpStore %outptr " << outv << "\n"
       << "OpBranch %merge\n"
       << "%merge = OpLabel\n"
       << "OpReturn\n"
@@ -214,6 +324,14 @@ std::string print_ir(const Program& p) {
     for (const auto& i : p.insts) {
         if (i.op == "select")                       // select DST COND A B
             o << "select " << i.dst << " " << i.c << " " << i.a << " " << i.b << "\n";
+        else if (i.op == "var" || i.op == "set")    // var/set NAME VALUE
+            o << i.op << " " << i.dst << " " << i.a << "\n";
+        else if (i.op == "loop")                    // loop COUNT
+            o << "loop " << i.a << "\n";
+        else if (i.op == "end")
+            o << "end\n";
+        else if (i.op == "iter")
+            o << "iter " << i.dst << "\n";
         else if (i.b.empty())                       // unary: op DST A
             o << i.op << " " << i.dst << " " << i.a << "\n";
         else                                        // binary / compare: op DST A B

@@ -67,12 +67,12 @@ check "HLE add resolved by name" "$(echo "$msg" | grep -c 'hle\] cincar_add(2, 3
 check "unresolved import named" "$(echo "$msg" | grep -c "unresolved import 'cincar_missing'")" "1"
 
 # GPU track: IR -> SPIR-V assembly, then validate with the real Khronos tools.
-for name in madd names ops select cmp; do
+for name in madd names ops select cmp loop_sum newton_sqrt two_loops; do
     "$BUILD/shadercc" tests/shaders/$name.ir > "$TMP/$name.spvasm" 2>/dev/null; code=$?
     check "shadercc translates $name.ir" "$code" "0"
 done
 if command -v spirv-as >/dev/null && command -v spirv-val >/dev/null; then
-    for name in madd names ops select cmp; do
+    for name in madd names ops select cmp loop_sum newton_sqrt two_loops; do
         spirv-as --target-env vulkan1.0 "$TMP/$name.spvasm" -o "$TMP/$name.spv" 2>"$TMP/as.log"; code=$?
         check "spirv-as assembles $name" "$code" "0"
         [ $code -ne 0 ] && cat "$TMP/as.log"
@@ -93,6 +93,11 @@ check "evaluator: every operation" "$("$BUILD/shaderrun" tests/shaders/ops.ir x=
 check "evaluator: names that look like internal ids" "$("$BUILD/shaderrun" tests/shaders/names.ir out=1,2 count=3,4 body=5,6)" "10 13"
 check "evaluator: select (clamp)" "$("$BUILD/shaderrun" tests/shaders/select.ir x=-5,3,10 limit=8,8,8)" "0 3 8"
 check "evaluator: all six comparisons" "$("$BUILD/shaderrun" tests/shaders/cmp.ir a=1,2,3 b=2,2,1)" "101001 1110 10101"
+check "emitted loop has a structured loop header" "$(grep -c 'OpLoopMerge' "$TMP/loop_sum.spvasm")" "1"
+check "two loops get two loop headers" "$(grep -c 'OpLoopMerge' "$TMP/two_loops.spvasm")" "2"
+check "evaluator: loop with accumulator and iteration index" "$("$BUILD/shaderrun" tests/shaders/loop_sum.ir x=1,2,3)" "10 20 30"
+check "evaluator: Newton square root" "$("$BUILD/shaderrun" tests/shaders/newton_sqrt.ir x=4,9,2)" "2 3 1.41421"
+check "evaluator: two loops in a row" "$("$BUILD/shaderrun" tests/shaders/two_loops.ir x=1,2,10)" "7 11 43"
 expect_eval_error() {   # expected message, then shaderrun arguments
     msg="$1"; shift
     err=$("$BUILD/shaderrun" "$@" 2>&1 >/dev/null); code=$?
@@ -125,6 +130,9 @@ if [ -x "$BUILD/vkrun" ] && command -v spirv-as >/dev/null; then
     gpu_check "all six comparisons" tests/shaders/cmp.ir a=1,2,3 b=2,2,1
     X=$(seq -s, -50 49); L=$(printf '20,%.0s' $(seq 100)); L=${L%,}
     gpu_check "select (clamp), 100 elements" tests/shaders/select.ir x=$X limit=$L
+    gpu_check "loop with accumulator" tests/shaders/loop_sum.ir x=1,2,3
+    gpu_check "two loops in a row" tests/shaders/two_loops.ir x=1,2,10
+    gpu_check "Newton square root, 100 elements" tests/shaders/newton_sqrt.ir x=$(seq -s, 1 100)
 else
     echo "SKIP: vkrun not built or spirv-as missing"
 fi
@@ -192,6 +200,14 @@ expect_ir_error bad_opcode "error: line 2: unknown instruction 'frobnicate'"
 expect_ir_error bad_float_as_bool "error: line 2: 'a' is float, expected bool"
 expect_ir_error bad_bool_in_arith "error: line 3: 'c' is bool, expected float"
 expect_ir_error bad_bool_output "error: line 3: 'c' is bool, expected float"
+expect_ir_error bad_loop_scope "error: line 5: 't' was defined inside a loop and is not visible here"
+expect_ir_error bad_nested "error: line 3: nested loops are not supported yet"
+expect_ir_error bad_end "error: line 2: 'end' without a matching 'loop'"
+expect_ir_error bad_noend "error: line 2: 'loop' is missing its 'end'"
+expect_ir_error bad_set_nonvar "error: line 2: 'x' is not a var, so it cannot be assigned"
+expect_ir_error bad_iter_outside "error: line 2: 'iter' is only valid inside a loop"
+expect_ir_error bad_var_in_loop "error: line 3: 'var' must be declared outside loops"
+expect_ir_error bad_loop_count "error: line 2: bad loop count '0' (expected an integer from 1 to 100000)"
 
 echo "not an elf" > "$TMP/bad"
 err=$("$BUILD/runelf" "$TMP/bad" 2>&1); code=$?

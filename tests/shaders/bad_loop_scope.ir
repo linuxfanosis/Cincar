@@ -1,0 +1,6 @@
+in x
+loop 2
+add t x x
+end
+add u t x
+out u

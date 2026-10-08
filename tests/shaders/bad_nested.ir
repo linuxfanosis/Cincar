@@ -1,0 +1,6 @@
+in x
+loop 2
+loop 3
+end
+end
+out x

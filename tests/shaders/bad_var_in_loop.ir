@@ -1,0 +1,5 @@
+in x
+loop 2
+var a x
+end
+out x

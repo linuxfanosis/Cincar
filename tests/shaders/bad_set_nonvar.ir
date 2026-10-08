@@ -1,0 +1,3 @@
+in x
+set x x
+out x

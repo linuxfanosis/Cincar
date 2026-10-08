@@ -1,0 +1,16 @@
+# out = 3 + 4x, using two loops one after the other
+in x
+const zero 0.0
+const one 1.0
+var a zero
+var b zero
+loop 3
+  add t a one
+  set a t
+end
+loop 4
+  add u b x
+  set b u
+end
+add r a b
+out r
