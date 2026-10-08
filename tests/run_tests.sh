@@ -140,6 +140,17 @@ if [ -x "$BUILD/vkrun" ] && command -v spirv-as >/dev/null; then
     gpu_check "vec4 dot product" tests/shaders/vec_dot.ir x=1,2,0 y=1,0,0 z=1,0,1
     gpu_check "vec4 add/sub/mul/scale/get" tests/shaders/vec_ops.ir a=3,1,5 b=5,7,2
     gpu_check "vec4 add/sub/mul/scale/get, 100 elements" tests/shaders/vec_ops.ir a=$(seq -s, 1 100) b=$(seq -s, 101 200)
+    # The same harness under the Khronos validation layer: any warning or error fails the run.
+    if [ -f /usr/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json ]; then
+        export VKRUN_VALIDATE=1
+        gpu_check "under the validation layer: madd" tests/shaders/madd.ir a=1,2,3 b=4,5,6
+        gpu_check "under the validation layer: select" tests/shaders/select.ir x=-5,3,10 limit=8,8,8
+        gpu_check "under the validation layer: loop" tests/shaders/loop_sum.ir x=1,2,3
+        gpu_check "under the validation layer: vec4, 100 elements" tests/shaders/vec_ops.ir a=$(seq -s, 1 100) b=$(seq -s, 101 200)
+        unset VKRUN_VALIDATE
+    else
+        echo "SKIP: Vulkan validation layer not installed (sudo apt-get install -y vulkan-validationlayers)"
+    fi
 else
     echo "SKIP: vkrun not built or spirv-as missing"
 fi

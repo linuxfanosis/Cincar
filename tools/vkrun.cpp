@@ -21,6 +21,20 @@ namespace {
 
 constexpr int EXIT_SKIP = 77;
 
+// Messages from the Vulkan validation layer (enabled with VKRUN_VALIDATE=1) are counted;
+// any warning or error makes vkrun fail.
+int g_validation_messages = 0;
+
+VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                                              VkDebugUtilsMessageTypeFlagsEXT,
+                                              const VkDebugUtilsMessengerCallbackDataEXT* data, void*) {
+    if (severity & (VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)) {
+        ++g_validation_messages;
+        std::fprintf(stderr, "[validation] %s\n", data->pMessage);
+    }
+    return VK_FALSE;
+}
+
 bool parse_inputs(int argc, char** argv, std::map<std::string, std::vector<float>>& inputs, std::string& error) {
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
@@ -87,16 +101,55 @@ int main(int argc, char** argv) {
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "vkrun";
     app.apiVersion = VK_API_VERSION_1_0;
+    const bool validate = std::getenv("VKRUN_VALIDATE") != nullptr;
+    const char* layers[] = {"VK_LAYER_KHRONOS_validation"};
+    const char* exts[] = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME};
     VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ici.pApplicationInfo = &app;
+    if (validate) {
+        ici.enabledLayerCount = 1;
+        ici.ppEnabledLayerNames = layers;
+        ici.enabledExtensionCount = 1;
+        ici.ppEnabledExtensionNames = exts;
+    }
     VkInstance instance = VK_NULL_HANDLE;
-    if (vkCreateInstance(&ici, nullptr, &instance) != VK_SUCCESS) {
+    VkResult ir = vkCreateInstance(&ici, nullptr, &instance);
+    if (ir == VK_ERROR_LAYER_NOT_PRESENT && validate) {
+        std::printf("validation requested but the Khronos validation layer is not installed "
+                    "(sudo apt-get install -y vulkan-validationlayers)\n");
+        return EXIT_SKIP;
+    }
+    if (ir != VK_SUCCESS) {
         std::printf("no Vulkan instance available\n");
         return EXIT_SKIP;
     }
+    VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
+    if (validate) {
+        auto create_messenger = (PFN_vkCreateDebugUtilsMessengerEXT)
+            vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+        VkDebugUtilsMessengerCreateInfoEXT mci{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+        mci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                              VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        mci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                          VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
+        mci.pfnUserCallback = debug_callback;
+        if (!create_messenger || create_messenger(instance, &mci, nullptr, &messenger) != VK_SUCCESS) {
+            std::fprintf(stderr, "error: could not create the validation message callback\n");
+            vkDestroyInstance(instance, nullptr);
+            return 1;
+        }
+    }
+    auto destroy_instance = [&]() {
+        if (messenger != VK_NULL_HANDLE) {
+            auto destroy_messenger = (PFN_vkDestroyDebugUtilsMessengerEXT)
+                vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+            destroy_messenger(instance, messenger, nullptr);
+        }
+        vkDestroyInstance(instance, nullptr);
+    };
     uint32_t ndev = 0;
     vkEnumeratePhysicalDevices(instance, &ndev, nullptr);
-    if (ndev == 0) { std::printf("no Vulkan device found\n"); return EXIT_SKIP; }
+    if (ndev == 0) { std::printf("no Vulkan device found\n"); destroy_instance(); return EXIT_SKIP; }
     std::vector<VkPhysicalDevice> devs(ndev);
     vkEnumeratePhysicalDevices(instance, &ndev, devs.data());
     size_t pick = std::getenv("VKRUN_DEVICE") ? (size_t)std::atoi(std::getenv("VKRUN_DEVICE")) : 0;
@@ -115,7 +168,7 @@ int main(int argc, char** argv) {
     uint32_t qf = nq;
     for (uint32_t i = 0; i < nq; ++i)
         if (qprops[i].queueFlags & VK_QUEUE_COMPUTE_BIT) { qf = i; break; }
-    if (qf == nq) { std::printf("device has no compute queue\n"); return EXIT_SKIP; }
+    if (qf == nq) { std::printf("device has no compute queue\n"); destroy_instance(); return EXIT_SKIP; }
 
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
@@ -310,11 +363,41 @@ int main(int argc, char** argv) {
         if (gpu[i] != SENTINEL) { first_dirty = i; break; }
     print_vec("gpu", gpu);
     print_vec("cpu", expected.data());
-    if (!ok) { std::printf("MISMATCH at element %zu\n", first_bad); return 1; }
-    if (first_dirty != padded) {
+    int result = 0;
+    if (!ok) {
+        std::printf("MISMATCH at element %zu\n", first_bad);
+        result = 1;
+    } else if (first_dirty != padded) {
         std::printf("PADDING OVERWRITTEN at element %zu (threads past the end wrote to the buffer)\n", first_dirty);
-        return 1;
+        result = 1;
+    } else {
+        std::printf("match (%zu elements, padding untouched)\n", n);
     }
-    std::printf("match (%zu elements, padding untouched)\n", n);
-    return 0;   // process exit releases the Vulkan objects; explicit teardown can come later
+
+    // ---- Teardown, in reverse order of creation ------------------------------------
+    VK(vkDeviceWaitIdle(dev));
+    vkDestroyFence(dev, fence, nullptr);
+    vkDestroyCommandPool(dev, cmdpool, nullptr);       // also frees its command buffers
+    vkDestroyDescriptorPool(dev, pool, nullptr);       // also frees its descriptor sets
+    vkDestroyPipeline(dev, pipeline, nullptr);
+    vkDestroyShaderModule(dev, shader, nullptr);
+    vkDestroyPipelineLayout(dev, layout, nullptr);
+    vkDestroyDescriptorSetLayout(dev, dsl, nullptr);
+    for (auto& b : bufs) {
+        vkUnmapMemory(dev, b.mem);
+        vkDestroyBuffer(dev, b.buf, nullptr);
+        vkFreeMemory(dev, b.mem, nullptr);
+    }
+    vkDestroyDevice(dev, nullptr);                      // the layer reports leaked device objects here
+    if (validate) {
+        if (g_validation_messages > 0) {
+            std::printf("VALIDATION: %d message(s) from the Vulkan validation layer (see above)\n",
+                        g_validation_messages);
+            result = 1;
+        } else {
+            std::printf("validation: clean\n");
+        }
+    }
+    destroy_instance();
+    return result;
 }
