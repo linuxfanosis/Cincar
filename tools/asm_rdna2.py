@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble RDNA 2 (gfx1030) assembly with LLVM's llvm-mc and print the instruction words.
+"""Assemble RDNA 2 (gfx1013) assembly with LLVM's llvm-mc and print the instruction words.
 
 usage: asm_rdna2.py file.s     prints one 8-digit hex dword per line
        asm_rdna2.py --check    exit 0 if a working llvm-mc with the AMDGPU target exists
@@ -19,7 +19,7 @@ def find_llvm_mc():
     return None
 
 def assemble(mc, text):
-    cmd = [mc, "-triple=amdgcn", "-mcpu=gfx1030", "-mattr=+wavefrontsize64", "-show-encoding"]
+    cmd = [mc, "-triple=amdgcn", "-mcpu=gfx1013", "-mattr=+wavefrontsize64", "-show-encoding"]
     r = subprocess.run(cmd, input=text, capture_output=True, text=True)
     if r.returncode != 0:
         return None, r.stderr.strip() or "llvm-mc failed"
@@ -40,7 +40,7 @@ def main():
     if len(sys.argv) == 2 and sys.argv[1] == "--check":
         words, err = assemble(mc, "s_endpgm\n")
         if words != ["bf810000"]:
-            print("llvm-mc cannot assemble for gfx1030: %s" % (err or words), file=sys.stderr)
+            print("llvm-mc cannot assemble for gfx1013: %s" % (err or words), file=sys.stderr)
             return 2
         return 0
     if len(sys.argv) != 2:

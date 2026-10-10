@@ -82,3 +82,11 @@ without a GPU.
 - AMD's machine-readable ISA specification is published under the MIT license. It is downloaded on
   demand into `third_party/` (git-ignored) and not redistributed here.
 - Add your own LICENSE file before accepting contributions or sharing the code.
+
+## Target hardware
+
+The PS5 GPU is gfx1013, which sits between RDNA 1 and RDNA 2: it has some gfx10.1-only instructions
+(for example `v_mad_f32`, `v_mac_f32` and their legacy variants) as well as RDNA 2 additions such as
+ray-tracing and dot-product ops. The relevant instruction set is therefore the union of AMD's RDNA 1 and
+RDNA 2 specifications (1,166 names). The LLVM oracle assembles for `gfx1013`, and `tools/isa_coverage.py`
+reports decoder coverage against that union.
